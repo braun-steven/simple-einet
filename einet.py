@@ -4,6 +4,7 @@ from typing import List
 import numpy as np
 import torch
 from torch import nn
+from clipper import DistributionClipper
 
 from layers import EinsumLayer, Product, Sum
 from utils import SamplingContext
@@ -53,7 +54,6 @@ class Einet(nn.Module):
 
         self.layers = nn.ModuleList(layers)
         self.prod = Product(_in_features, cardinality=_in_features)
-        self.root = Sum(in_channels=7, in_features=1, out_channels=1, num_repetitions=1)
         self.root = Sum(in_channels=R, in_features=1, out_channels=1, num_repetitions=1)
 
     def forward(self, x: torch.Tensor):
@@ -108,18 +108,44 @@ class Einet(nn.Module):
 
 if __name__ == "__main__":
     from distributions import Normal
-
     torch.manual_seed(0)
+
+    # Input dimensions
     in_features = 4
-    out_channels = 8
-    nrep = 1
+    batchsize = 5
 
-    batchsize = 10
+    # Create input sample
+    x = torch.randn(batchsize, in_features)
 
-    x = torch.randn(batchsize, in_features, nrep)
-    einet = Einet(K=3, D=2, R=7, in_features=in_features, leaf_cls=Normal)
-    output = einet(x)
-    print(f"{output.shape=}")
+    # Construct Einet
+    einet = Einet(K=2, D=2, R=2, in_features=in_features, leaf_cls=Normal)
 
-    samples = einet.sample(10)
+    # Compute log-likelihoods
+    lls = einet(x)
+    print(f"{lls=}")
+    print(f"{lls.shape=}")
+
+    # Construct samples
+    samples = einet.sample(2)
+    print(f"{samples=}")
     print(f"{samples.shape=}")
+
+    # Optimize Einet parameters (weights and leaf params)
+    optim = torch.optim.Adam(einet.parameters(), lr=0.001)
+    clipper = DistributionClipper()
+
+    for _ in range(1000):
+        optim.zero_grad()
+
+        # Forward pass: log-likelihoods
+        lls = einet(x)
+
+        # Backprop NLL loss
+        nlls = -1 * lls.sum()
+        nlls.backward()
+
+        # Update weights
+        optim.step()
+
+        # Clip leaf distribution parameters (e.g. std > 0.0, etc.)
+        clipper(einet.leaf)
