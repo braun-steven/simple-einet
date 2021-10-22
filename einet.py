@@ -54,6 +54,7 @@ class Einet(nn.Module):
         self.layers = nn.ModuleList(layers)
         self.prod = Product(_in_features, cardinality=_in_features)
         self.root = Sum(in_channels=7, in_features=1, out_channels=1, num_repetitions=1)
+        self.root = Sum(in_channels=R, in_features=1, out_channels=1, num_repetitions=1)
 
     def forward(self, x: torch.Tensor):
         log_p = self.leaf(x)
