@@ -2,6 +2,7 @@ import logging
 from abc import ABC, abstractmethod
 from typing import List, Union
 
+
 import numpy as np
 import torch
 from torch import nn
@@ -631,38 +632,3 @@ class EinsumLayer(AbstractLayer):
 
         context.parent_indices = indices
         return context
-
-
-if __name__ == "__main__":
-
-    torch.manual_seed(0)
-    in_channels = 3
-    in_features = 4
-    out_channels = 8
-    nrep = 1
-    p = CrossProduct(in_features=in_features, in_channels=in_channels)
-    S = Sum(in_channels=in_channels ** 2, in_features=in_features // 2, out_channels=out_channels)
-    # S.weights.data = torch.ones_like(S.weights.data)
-
-    batchsize = 10
-
-    # xp = p(x)
-    # xs = S(xp)
-
-    from distributions import Normal
-
-    x = torch.randn(batchsize, in_features, in_channels, nrep)
-    leaf = Normal(in_features=in_features, out_channels=in_channels, num_repetitions=nrep)
-    sp1 = EinsumLayer(in_features=in_features, in_channels=in_channels, out_channels=out_channels)
-    sp2 = EinsumLayer(in_channels=out_channels, in_features=in_features // 2, out_channels=1)
-
-
-    context = SamplingContext(n=1, is_mpe=False)
-    context = sp2.sample(N=1, context=context)
-    context = sp1.sample(N=1, context=context)
-    samples = leaf.sample(n=1, context=context)
-
-    print(f"{samples=}")
-    print(f"{context=}")
-    print(f"{sp2(sp1(leaf(x)))}")
-    print(f"{sp2(sp1(leaf(x))).shape}")

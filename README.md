@@ -20,13 +20,13 @@ einet = Einet(K=2, D=2, R=2, in_features=in_features, leaf_cls=Normal)
 
 # Compute log-likelihoods
 lls = einet(x)
-print(f"{lls=}")
-print(f"{lls.shape=}")
+print(f"lls={lls}")
+print(f"lss.shape={lls.shape}")
 
 # Construct samples
 samples = einet.sample(2)
-print(f"{samples=}")
-print(f"{samples.shape=}")
+print(f"samples={samples}")
+print(f"samples.shape={samples.shape}")
 
 # Optimize Einet parameters (weights and leaf params)
 optim = torch.optim.Adam(einet.parameters(), lr=0.001)

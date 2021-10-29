@@ -66,3 +66,14 @@ class SamplingContext:
     @property
     def is_root(self):
         return self.parent_indices == None and self.repetition_indices == None
+
+
+def invert_permutation(p: torch.Tensor):
+    """
+    The argument p is assumed to be some permutation of 0, 1, ..., len(p)-1.
+    Returns an array s, where s[i] gives the index of i in p.
+    Taken from: https://stackoverflow.com/a/25535723, adapted to PyTorch.
+    """
+    s = torch.empty(p.shape[0], dtype=p.dtype, device=p.device)
+    s[p] = torch.arange(p.shape[0])
+    return s
