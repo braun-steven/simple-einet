@@ -152,7 +152,7 @@ class Sum(AbstractLayer):
         # index is of size in_feature
         weights = self.weights.data
         d, ic, oc, r = weights.shape
-        n = context.n
+        n = context.num_samples
 
         # Create sampling context if this is a root layer
         if context.is_root:
@@ -212,7 +212,7 @@ class Sum(AbstractLayer):
                 f"Sum layer has multiple repetitions (num_repetitions=={self.num_repetitions}) but repetition_indices argument was None, expected a Long tensor size #samples."
             )
         if self.num_repetitions == 1 and context.repetition_indices is None:
-            context.repetition_indices = torch.zeros(context.n, dtype=int, device=self.__device)
+            context.repetition_indices = torch.zeros(context.num_samples, dtype=int, device=self.__device)
 
     def __repr__(self):
         return (
@@ -304,8 +304,8 @@ class Product(AbstractLayer):
 
             if self.num_repetitions == 1:
                 # If there is only a single repetition, create new sampling context
-                context.parent_indices = torch.zeros(context.n, 1, dtype=int, device=self.__device)
-                context.repetition_indices = torch.zeros(context.n, dtype=int, device=self.__device)
+                context.parent_indices = torch.zeros(context.num_samples, 1, dtype=int, device=self.__device)
+                context.repetition_indices = torch.zeros(context.num_samples, dtype=int, device=self.__device)
                 return context
             else:
                 raise Exception(
@@ -449,8 +449,8 @@ class CrossProduct(AbstractLayer):
         if context.is_root:
             if self.num_repetitions == 1:
                 # If there is only a single repetition, create new sampling context
-                context.parent_indices = torch.zeros(context.n, 1, dtype=int, device=self.__device)
-                context.repetition_indices = torch.zeros(context.n, dtype=int, device=self.__device)
+                context.parent_indices = torch.zeros(context.num_samples, 1, dtype=int, device=self.__device)
+                context.repetition_indices = torch.zeros(context.num_samples, dtype=int, device=self.__device)
                 return context
             else:
                 raise Exception(
@@ -527,6 +527,10 @@ class EinsumLayer(AbstractLayer):
             requires_grad=False,
         )
 
+        self.out_shape = (
+            f"(N, {self._out_features}, {self.out_channels}, {self.num_repetitions})"
+        )
+
     def forward(self, x: torch.Tensor):
         """
         Einsum layer forward pass.
@@ -584,7 +588,7 @@ class EinsumLayer(AbstractLayer):
         # index is of size in_feature
         weights = self.weights
         D, IC2, IC2, OC, R = weights.shape
-        N = context.n
+        N = context.num_samples
 
         if context.is_root:
             assert OC == 1 and R == 1, "Cannot start sampling from non-root layer."
@@ -632,3 +636,10 @@ class EinsumLayer(AbstractLayer):
 
         context.parent_indices = indices
         return context
+
+    def __repr__(self):
+        return (
+            "EinsumLayer(in_channels={}, in_features={}, out_channels={}, out_shape={})".format(
+                self.in_channels, self.in_features, self.out_channels, self.out_shape
+            )
+        )

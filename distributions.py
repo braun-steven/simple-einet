@@ -58,12 +58,12 @@ def _mode(
     # TODO: Implement more torch distributions
     if isinstance(distribution, dist.Normal):
         # Repeat the mode along the batch axis
-        return distribution.mean.repeat(context.n, 1, 1, 1, 1)
+        return distribution.mean.repeat(context.num_samples, 1, 1, 1, 1)
     elif isinstance(distribution, dist.Bernoulli):
         mode = distribution.probs.clone()
         mode[mode >= 0.5] = 1.0
         mode[mode < 0.5] = 0.0
-        return mode.repeat(context.n, 1, 1, 1, 1)
+        return mode.repeat(context.num_samples, 1, 1, 1, 1)
     else:
         raise Exception(f"MPE not yet implemented for type {type(distribution)}")
 
@@ -84,17 +84,17 @@ def dist_sample(
     if context.is_mpe:
         samples = _mode(distribution, context)
     else:
-        samples = distribution.sample(sample_shape=(context.n,))
+        samples = distribution.sample(sample_shape=(context.num_samples,))
 
     assert (
         samples.shape[1] == 1
     ), "Something went wrong. First sample size dimension should be size 1 due to the distribution parameter dimensions. Please report this issue."
     samples.squeeze_(1)
-    n, d, c, r = samples.shape
+    num_samples, d, c, r = samples.shape
 
     # Filter each sample by its specific repetition
-    tmp = torch.zeros(n, d, c, device=context.repetition_indices.device)
-    for i in range(n):
+    tmp = torch.zeros(num_samples, d, c, device=context.repetition_indices.device)
+    for i in range(num_samples):
         tmp[i, :, :] = samples[i, :, :, context.repetition_indices[i]]
     samples = tmp
 
@@ -174,7 +174,7 @@ class Leaf(AbstractLayer):
         """Get the underlying torch distribution."""
         pass
 
-    def sample(self, n: int = None, context: SamplingContext = None) -> torch.Tensor:
+    def sample(self, num_samples: int = None, context: SamplingContext = None) -> torch.Tensor:
         """
         Perform sampling, given indices from the parent layer that indicate which of the multiple representations
         for each input shall be used.
@@ -312,7 +312,7 @@ class MultivariateNormal(Leaf):
 
         return x
 
-    def sample(self, n: int = None, context: SamplingContext = None) -> torch.Tensor:
+    def sample(self, num_samples: int = None, context: SamplingContext = None) -> torch.Tensor:
         """TODO: Multivariate need special treatment."""
         raise Exception("Not yet implemented")
 
@@ -448,7 +448,7 @@ class Mixture(Leaf):
         x = self.sumlayer(x)
         return x
 
-    def sample(self, n: int = None, context: SamplingContext = None) -> torch.Tensor:
+    def sample(self, num_samples: int = None, context: SamplingContext = None) -> torch.Tensor:
         # Sample from sum mixture layer
         context = self.sumlayer.sample(context=context)
 
@@ -736,7 +736,7 @@ class IndependentMultivariate(Leaf):
             "IndependentMultivariate does not have an explicit PyTorch base distribution."
         )
 
-    def sample(self, n: int = None, context: SamplingContext = None) -> torch.Tensor:
+    def sample(self, num_samples: int = None, context: SamplingContext = None) -> torch.Tensor:
         context = self.prod.sample(context=context)
 
         # Remove padding

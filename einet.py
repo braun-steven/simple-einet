@@ -121,27 +121,27 @@ class Einet(nn.Module):
         Returns:
             torch.Tensor: Generated samples.
         """
-        context = SamplingContext(n=n)
+        context = SamplingContext(num_samples=n)
 
         context = self.root.sample(context=context)
 
         # Exchange parent and repetition indices since thie root layer
         # models a mixture over the repetitions
         context = SamplingContext(
-            n=context.n,
+            num_samples=context.num_samples,
             parent_indices=context.repetition_indices.unsqueeze(1),
             repetition_indices=context.parent_indices.squeeze(1),
         )
 
         # Sample from scope merging product layer
-        context = self.prod.sample(context.n, context)
+        context = self.prod.sample(context.num_samples, context)
 
         # Sample from all other (EisumLayers) layers in reverse (top-down)
         for layer in reversed(self.layers):
-            context = layer.sample(context.n, context)
+            context = layer.sample(context.num_samples, context)
 
         # Sample from leaf layer
-        samples = self.leaf.sample(context.n, context)
+        samples = self.leaf.sample(context.num_samples, context)
 
         # Invert permutation
         for i in range(n):
@@ -426,7 +426,7 @@ class RatSpn(nn.Module):
         """
         return self.sample(evidence=evidence, is_mpe=True)
 
-    def sample(self, n: int = None, class_index=None, evidence: torch.Tensor = None, is_mpe: bool = False):
+    def sample(self, num_samples: int = None, class_index=None, evidence: torch.Tensor = None, is_mpe: bool = False):
         """
         Sample from the distribution represented by this SPN.
 
@@ -454,34 +454,34 @@ class RatSpn(nn.Module):
 
         """
         assert class_index is None or evidence is None, "Cannot provide both, evidence and class indices."
-        assert n is None or evidence is None, "Cannot provide both, number of samples to generate (n) and evidence."
+        assert num_samples is None or evidence is None, "Cannot provide both, number of samples to generate (n) and evidence."
 
         # Check if evidence contains nans
         if evidence is not None:
             assert (evidence != evidence).any(), "Evidence has no NaN values."
 
             # Set n to the number of samples in the evidence
-            n = evidence.shape[0]
+            num_samples = evidence.shape[0]
 
         with provide_evidence(self, evidence):  # May be None but that's ok
             # If class is given, use it as base index
             if class_index is not None:
                 if isinstance(class_index, list):
                     indices = torch.tensor(class_index, device=self.__device).view(-1, 1)
-                    n = indices.shape[0]
+                    num_samples = indices.shape[0]
                 else:
-                    indices = torch.empty(size=(n, 1), device=self.__device)
+                    indices = torch.empty(size=(num_samples, 1), device=self.__device)
                     indices.fill_(class_index)
 
                 # Create new sampling context
-                ctx = SamplingContext(n=n, parent_indices=indices, repetition_indices=None, is_mpe=is_mpe)
+                ctx = SamplingContext(num_samples=num_samples, parent_indices=indices, repetition_indices=None, is_mpe=is_mpe)
             else:
                 # Start sampling one of the C root nodes TODO: check what happens if C=1
-                ctx = SamplingContext(n=n, is_mpe=is_mpe)
+                ctx = SamplingContext(num_samples=num_samples, is_mpe=is_mpe)
                 ctx = self._sampling_root.sample(context=ctx)
 
             # Sample from RatSpn root layer: Results are indices into the stacked output channels of all repetitions
-            ctx.repetition_indices = torch.zeros(n, dtype=int, device=self.__device)
+            ctx.repetition_indices = torch.zeros(num_samples, dtype=int, device=self.__device)
             ctx = self.root.sample(context=ctx)
 
             # Indexes will now point to the stacked channels of all repetitions (R * S^2 (if D > 1)
@@ -497,13 +497,13 @@ class RatSpn(nn.Module):
             # Continue at layers
             # Sample inner layers in reverse order (starting from topmost)
             for layer in reversed(self._inner_layers):
-                ctx = layer.sample(N = ctx.n, context=ctx)
+                ctx = layer.sample(N = ctx.num_samples, context=ctx)
 
             # Sample leaf
             samples = self._leaf.sample(context=ctx)
 
             # Invert permutation
-            for i in range(n):
+            for i in range(num_samples):
                 rep_index = ctx.repetition_indices[i]
                 inv_rand_indices = invert_permutation(self.rand_indices[:, rep_index])
                 samples[i, :] = samples[i, inv_rand_indices]

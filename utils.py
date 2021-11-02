@@ -46,7 +46,7 @@ def provide_evidence(spn: nn.Module, evidence: torch.Tensor, requires_grad=False
 @dataclass
 class SamplingContext:
     # Number of samples
-    n: int = None
+    num_samples: int = None
 
     # Indices into the out_channels dimension
     parent_indices: torch.Tensor = None
