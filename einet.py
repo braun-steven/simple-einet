@@ -324,8 +324,7 @@ class RatSpn(nn.Module):
         # Merge results from the different repetitions into the channel dimension
         N, d, c, r = x.size()
         assert d == 1  # number of features should be 1 at this point
-        # x = x.view(n, d, c * r, 1)
-        x = x.reshape(N, d, c * r, 1)
+        x = x.view(N, d, c * r, 1)
 
         # Apply C sum node outputs
         x = self.root(x)
@@ -371,12 +370,13 @@ class RatSpn(nn.Module):
             # Current in_features
             in_features = 2 ** i
 
-            einsumlayer = EinsumLayer(in_features=in_features, in_channels=self.config.S, out_channels=self.config.S, num_repetitions=self.config.R)
+            _out_channels = self.config.S if i > 1 else 1
+            einsumlayer = EinsumLayer(in_features=in_features, in_channels=self.config.S, out_channels=_out_channels, num_repetitions=self.config.R)
             self._inner_layers.append(einsumlayer)
 
         # Construct root layer
         self.root = Sum(
-            in_channels=self.config.R * self.config.S, in_features=1, num_repetitions=1, out_channels=self.config.C
+            in_channels=self.config.R, in_features=1, num_repetitions=1, out_channels=self.config.C
         )
 
         # Construct sampling root with weights according to priors for sampling
@@ -564,3 +564,10 @@ if __name__ == "__main__":
 
         # Clip leaf distribution parameters (e.g. std > 0.0, etc.)
         clipper(einet.leaf)
+
+
+    # Construct samples
+    samples = einet.sample(2)
+    print(f"x={x}")
+    print(f"samples={samples}")
+    print(f"samples.shape={samples.shape}")
