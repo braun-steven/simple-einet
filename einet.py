@@ -1,188 +1,24 @@
 #!/usr/bin/env python3
 
-from typing import List
-import numpy as np
-import torch
-from torch import nn
-from clipper import DistributionClipper
-
-from layers import EinsumLayer, Product, Sum
-from utils import SamplingContext, invert_permutation
-
-
-class Einet(nn.Module):
-    def __init__(self, K, D, R, in_features, leaf_cls, C=1):
-        """EinsumNetwork Module.
-
-        Args:
-            K (int): Number of sum nodes in each layer.
-            D (int): Depth.
-            R (int): Number of repetitions.
-            C (int): Number of root notes (classes, if applicable).
-            in_features (int): Number of input features.
-            leaf_cls: Leaf layer class.
-        """
-        super().__init__()
-        self.in_features = in_features
-        self.in_channels = K
-        self.num_sums = K
-        self.depth = D
-        self.num_repetitions = R
-        self.num_classes = C
-        self._make_random_repetition_permutation_indices()
-
-        # Create leaf layer
-        self.leaf = leaf_cls(in_features=in_features, out_channels=K, num_repetitions=R)
-
-        layers = []
-        _in_features = in_features
-        _in_channels = self.in_channels
-        for d in range(self.depth):
-            # Last channel should output only a single sum node
-            if d < self.depth - 1:
-                out_channels = self.num_sums
-            else:
-                out_channels = 1
-
-            l = EinsumLayer(
-                in_features=_in_features,
-                in_channels=_in_channels,
-                out_channels=out_channels,
-                num_repetitions=R,
-            )
-            layers.append(l)
-            _in_features = l._out_features
-            _in_channels = self.num_sums
-
-        self.layers = nn.ModuleList(layers)
-        self.prod = Product(_in_features, cardinality=_in_features)
-        self.root = Sum(in_channels=R, in_features=1, out_channels=self.num_classes, num_repetitions=1)
-
-    def _make_random_repetition_permutation_indices(self):
-        """Create random permutation indices for each repetition."""
-        self.rand_indices = torch.empty(size=(self.in_features, self.num_repetitions))
-        for r in range(self.num_repetitions):
-            # Each repetition has its own randomization
-            self.rand_indices[:, r] = torch.tensor(np.random.permutation(self.in_features))
-
-        self.rand_indices = self.rand_indices.long()
-
-
-    def _randomize(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Randomize the input at each repetition according to `self.rand_indices`.
-
-        Args:
-            x: Input.
-
-        Returns:
-            torch.Tensor: Randomized input along feature axis. Each repetition has its own permutation.
-        """
-        # Expand input to the number of repetitions
-        x = x.unsqueeze(2)  # Make space for repetition axis
-        x = x.repeat((1, 1, self.num_repetitions))  # Repeat R times
-
-        # Random permutation
-        for r in range(self.num_repetitions):
-            # Get permutation indices for the r-th repetition
-            perm_indices = self.rand_indices[:, r]
-
-            # Permute the features of the r-th version of x using the indices
-            x[:, :, r] = x[:, perm_indices, r]
-
-        return x
-
-    def forward(self, x: torch.Tensor):
-        # Apply feature randomization for each repetition
-        x = self._randomize(x)
-
-        log_p = self.leaf(x)
-
-        # Forward through all layers, bottom up
-        for layer in self.layers:
-            log_p = layer(log_p)
-
-        # Root layer merges all scopes that are left
-        log_p = self.prod(log_p)
-
-        # Shift repetition dimension to build sum over repetitions
-        log_p = log_p.permute(0, 1, 3, 2)
-        log_p = self.root(log_p)
-        log_p = log_p.view(x.shape[0])
-
-        return log_p
-
-    def sample(self, n: int) -> torch.Tensor:
-        """Sample from the Einet model.
-
-        Args:
-            n (int): Number of samples to generate.
-
-        Returns:
-            torch.Tensor: Generated samples.
-        """
-        context = SamplingContext(num_samples=n)
-
-        context = self.root.sample(context=context)
-
-        # Exchange parent and repetition indices since thie root layer
-        # models a mixture over the repetitions
-        context = SamplingContext(
-            num_samples=context.num_samples,
-            parent_indices=context.repetition_indices.unsqueeze(1),
-            repetition_indices=context.parent_indices.squeeze(1),
-        )
-
-        # Sample from scope merging product layer
-        context = self.prod.sample(context.num_samples, context)
-
-        # Sample from all other (EisumLayers) layers in reverse (top-down)
-        for layer in reversed(self.layers):
-            context = layer.sample(context.num_samples, context)
-
-        # Sample from leaf layer
-        samples = self.leaf.sample(context.num_samples, context)
-
-        # Invert permutation
-        for i in range(n):
-            rep_index = context.repetition_indices[i]
-            inv_rand_indices = invert_permutation(self.rand_indices[:, rep_index])
-            samples[i, :] = samples[i, inv_rand_indices]
-
-        return samples
-
-
-
 import logging
+from dataclasses import dataclass
 from typing import Dict, Type
 
 import numpy as np
 import torch
-from dataclasses import dataclass
 from torch import nn
 
-from distributions import Leaf
-from layers import CrossProduct, Sum
+from clipper import DistributionClipper
+from distributions import IndependentMultivariate, Leaf, MultivariateNormal, truncated_normal_
+from layers import CrossProduct, EinsumLayer, Product, Sum
 from type_checks import check_valid
-from utils import provide_evidence, SamplingContext
-from distributions import IndependentMultivariate, RatNormal, truncated_normal_
+from utils import SamplingContext, invert_permutation, provide_evidence
 
 logger = logging.getLogger(__name__)
 
 
-def invert_permutation(p: torch.Tensor):
-    """
-    The argument p is assumed to be some permutation of 0, 1, ..., len(p)-1.
-    Returns an array s, where s[i] gives the index of i in p.
-    Taken from: https://stackoverflow.com/a/25535723, adapted to PyTorch.
-    """
-    s = torch.empty(p.shape[0], dtype=p.dtype, device=p.device)
-    s[p] = torch.arange(p.shape[0])
-    return s
-
-
 @dataclass
-class RatSpnConfig:
+class EinetConfig:
     """
     Class for keeping the RatSpn config. Parameter names are according to the original RatSpn paper.
 
@@ -226,30 +62,39 @@ class RatSpnConfig:
         self.R = check_valid(self.R, int, 1)
         self.I = check_valid(self.I, int, 1)
         self.dropout = check_valid(self.dropout, float, 0.0, 1.0)
-        assert self.leaf_base_class is not None, Exception("RatSpnConfig.leaf_base_class parameter was not set!")
+        assert self.leaf_base_class is not None, Exception(
+            "RatSpnConfig.leaf_base_class parameter was not set!"
+        )
         assert isinstance(self.leaf_base_class, type) and issubclass(
             self.leaf_base_class, Leaf
         ), f"Parameter RatSpnConfig.leaf_base_class must be a subclass type of Leaf but was {self.leaf_base_class}."
 
         if 2 ** self.D > self.F:
-            raise Exception(f"The tree depth D={self.D} must be <= {np.floor(np.log2(self.F))} (log2(in_features).")
+            raise Exception(
+                f"The tree depth D={self.D} must be <= {np.floor(np.log2(self.F))} (log2(in_features)."
+            )
 
     def __setattr__(self, key, value):
+        """
+        Implement __setattr__ so that an EinetConfig object can be created empty `EinetConfig()` and properties can be
+        set afterwards.
+        """
         if hasattr(self, key):
             super().__setattr__(key, value)
         else:
-            raise AttributeError(f"RatSpnConfig object has no attribute {key}")
+            raise AttributeError(f"EinetConfig object has no attribute {key}")
 
 
-class RatSpn(nn.Module):
+class Einet(nn.Module):
     """
-    RAT SPN PyTorch implementation with layer-wise tensors.
+    Einet RAT SPN PyTorch implementation with layer-wise tensors.
 
     See also:
-    https://arxiv.org/abs/1806.01910
+    - RAT SPN: https://arxiv.org/abs/1806.01910
+    - EinsumNetworks: https://arxiv.org/abs/2004.06231
     """
 
-    def __init__(self, config: RatSpnConfig):
+    def __init__(self, config: EinetConfig):
         """
         Create a RatSpn based on a configuration object.
 
@@ -271,12 +116,20 @@ class RatSpn(nn.Module):
 
     def _make_random_repetition_permutation_indices(self):
         """Create random permutation indices for each repetition."""
-        self.rand_indices = torch.empty(size=(self.config.F, self.config.R))
+        rand_indices = torch.empty(size=(self.config.F, self.config.R))
         for r in range(self.config.R):
             # Each repetition has its own randomization
-            self.rand_indices[:, r] = torch.tensor(np.random.permutation(self.config.F))
+            rand_indices[:, r] = torch.tensor(np.random.permutation(self.config.F))
+        rand_indices = rand_indices.long()
 
-        self.rand_indices = self.rand_indices.long()
+        # Construct inverse indices necessary during sampling
+        inv_rand_indices = torch.empty_like(rand_indices)
+        for r in range(self.config.R):
+            inv_rand_indices[:, r] = invert_permutation(rand_indices[:, r])
+
+        # Register as buffer so it persists when storing etc.
+        self.register_buffer("rand_indices", rand_indices)
+        self.register_buffer("inv_rand_indices", inv_rand_indices)
 
     def _randomize(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -315,16 +168,17 @@ class RatSpn(nn.Module):
         # Apply feature randomization for each repetition
         x = self._randomize(x)
 
-        # Apply leaf distributions
+        # Apply leaf distributions (replace marginalization indicators with 0.0 first)
         x = self._leaf(x)
 
         # Pass through intermediate layers
         x = self._forward_layers(x)
 
         # Merge results from the different repetitions into the channel dimension
-        N, d, c, r = x.size()
-        assert d == 1  # number of features should be 1 at this point
-        x = x.view(N, d, c * r, 1)
+        batch_size, features, channels, repetitions = x.size()
+        assert features == 1  # number of features should be 1 at this point
+        assert channels == 1  # number of channels should be 1 at this point
+        x = x.view(batch_size, 1, repetitions, 1)
 
         # Apply C sum node outputs
         x = self.root(x)
@@ -371,7 +225,12 @@ class RatSpn(nn.Module):
             in_features = 2 ** i
 
             _out_channels = self.config.S if i > 1 else 1
-            einsumlayer = EinsumLayer(in_features=in_features, in_channels=self.config.S, out_channels=_out_channels, num_repetitions=self.config.R)
+            einsumlayer = EinsumLayer(
+                in_features=in_features,
+                in_channels=self.config.S,
+                out_channels=_out_channels,
+                num_repetitions=self.config.R,
+            )
             self._inner_layers.append(einsumlayer)
 
         # Construct root layer
@@ -380,15 +239,19 @@ class RatSpn(nn.Module):
         )
 
         # Construct sampling root with weights according to priors for sampling
-        self._sampling_root = Sum(in_channels=self.config.C, in_features=1, out_channels=1, num_repetitions=1)
+        self._sampling_root = Sum(
+            in_channels=self.config.C, in_features=1, out_channels=1, num_repetitions=1
+        )
         self._sampling_root.weights = nn.Parameter(
-            torch.ones(size=(1, self.config.C, 1, 1)) * torch.tensor(1 / self.config.C), requires_grad=False
+            torch.ones(size=(1, self.config.C, 1, 1)) * torch.tensor(1 / self.config.C),
+            requires_grad=False,
         )
 
     def _build_input_distribution(self):
         """Construct the input distribution layer."""
         # Cardinality is the size of the region in the last partitions
         cardinality = np.ceil(self.config.F / (2 ** self.config.D)).astype(int)
+        pad = int(2 ** self.config.D - self.config.F / cardinality)
         return IndependentMultivariate(
             in_features=self.config.F,
             out_channels=self.config.I,
@@ -397,6 +260,7 @@ class RatSpn(nn.Module):
             dropout=self.config.dropout,
             leaf_base_class=self.config.leaf_base_class,
             leaf_base_kwargs=self.config.leaf_base_kwargs,
+            pad=pad,
         )
 
     @property
@@ -426,7 +290,15 @@ class RatSpn(nn.Module):
         """
         return self.sample(evidence=evidence, is_mpe=True)
 
-    def sample(self, num_samples: int = None, class_index=None, evidence: torch.Tensor = None, is_mpe: bool = False):
+    def sample(
+        self,
+        num_samples: int = None,
+        class_index=None,
+        evidence: torch.Tensor = None,
+        is_mpe: bool = False,
+        temperature_leaves: float = 1.0,
+        temperature_sums: float = 1.0,
+    ):
         """
         Sample from the distribution represented by this SPN.
 
@@ -448,13 +320,19 @@ class RatSpn(nn.Module):
                 distribution represented by the SPN. The result will contain the evidence and replace all NaNs with the
                 sampled values.
             is_mpe: Flag to perform max sampling (MPE).
+            temperature_leaves: Variance scaling for leaf distribution samples.
+            temperature_leaves: Variance scaling for sum node categorical sampling.
 
         Returns:
             torch.Tensor: Samples generated according to the distribution specified by the SPN.
 
         """
-        assert class_index is None or evidence is None, "Cannot provide both, evidence and class indices."
-        assert num_samples is None or evidence is None, "Cannot provide both, number of samples to generate (n) and evidence."
+        assert (
+            class_index is None or evidence is None
+        ), "Cannot provide both, evidence and class indices."
+        assert (
+            num_samples is None or evidence is None
+        ), "Cannot provide both, number of samples to generate (n) and evidence."
 
         # Check if evidence contains nans
         if evidence is not None:
@@ -474,30 +352,42 @@ class RatSpn(nn.Module):
                     indices.fill_(class_index)
 
                 # Create new sampling context
-                ctx = SamplingContext(num_samples=num_samples, parent_indices=indices, repetition_indices=None, is_mpe=is_mpe)
+                ctx = SamplingContext(
+                    num_samples=num_samples,
+                    parent_indices=indices,
+                    repetition_indices=None,
+                    is_mpe=is_mpe,
+                    temperature_leaves=temperature_leaves,
+                    temperature_sums=temperature_sums,
+                    num_repetitions=self.config.R,
+                )
             else:
                 # Start sampling one of the C root nodes TODO: check what happens if C=1
-                ctx = SamplingContext(num_samples=num_samples, is_mpe=is_mpe)
+                ctx = SamplingContext(
+                    num_samples=num_samples,
+                    is_mpe=is_mpe,
+                    temperature_leaves=temperature_leaves,
+                    temperature_sums=temperature_sums,
+                    num_repetitions=self.config.R,
+                )
                 ctx = self._sampling_root.sample(context=ctx)
 
             # Sample from RatSpn root layer: Results are indices into the stacked output channels of all repetitions
             ctx.repetition_indices = torch.zeros(num_samples, dtype=int, device=self.__device)
             ctx = self.root.sample(context=ctx)
 
-            # Indexes will now point to the stacked channels of all repetitions (R * S^2 (if D > 1)
-            # or R * I^2 (else)).
-            root_in_channels = self.root.in_channels // self.config.R
             # Obtain repetition indices
-            ctx.repetition_indices = (ctx.parent_indices // root_in_channels).squeeze(1)
-            # Shift indices
-            ctx.parent_indices = ctx.parent_indices % root_in_channels
+            ctx.repetition_indices, ctx.parent_indices = (
+                ctx.parent_indices.squeeze(1),
+                ctx.repetition_indices,
+            )
 
             # Now each sample in `indices` belongs to one repetition, index in `repetition_indices`
 
             # Continue at layers
             # Sample inner layers in reverse order (starting from topmost)
             for layer in reversed(self._inner_layers):
-                ctx = layer.sample(N = ctx.num_samples, context=ctx)
+                ctx = layer.sample(num_samples=ctx.num_samples, context=ctx)
 
             # Sample leaf
             samples = self._leaf.sample(context=ctx)
@@ -505,7 +395,7 @@ class RatSpn(nn.Module):
             # Invert permutation
             for i in range(num_samples):
                 rep_index = ctx.repetition_indices[i]
-                inv_rand_indices = invert_permutation(self.rand_indices[:, rep_index])
+                inv_rand_indices = self.inv_rand_indices[:, rep_index]
                 samples[i, :] = samples[i, inv_rand_indices]
 
             if evidence is not None:
@@ -520,9 +410,9 @@ class RatSpn(nn.Module):
                 return samples
 
 
-
 if __name__ == "__main__":
     from distributions import Normal
+
     torch.manual_seed(0)
 
     # Input dimensions
@@ -564,7 +454,6 @@ if __name__ == "__main__":
 
         # Clip leaf distribution parameters (e.g. std > 0.0, etc.)
         clipper(einet.leaf)
-
 
     # Construct samples
     samples = einet.sample(2)
