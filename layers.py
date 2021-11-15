@@ -531,6 +531,10 @@ class EinsumLayer(AbstractLayer):
         self.out_shape = (
             f"(N, {self._out_features}, {self.out_channels}, {self.num_repetitions})"
         )
+        # Necessary for sampling with evidence: Save input during forward pass.
+        self._is_input_cache_enabled = False
+        self._input_cache_left = None
+        self._input_cache_right = None
 
     def forward(self, x: torch.Tensor):
         """
@@ -579,35 +583,48 @@ class EinsumLayer(AbstractLayer):
 
         # LogEinsumExp trick, re-add the max
         prob = torch.log(prob) + left_max + right_max
+
+        # Save input if input cache is enabled
+        if self._is_input_cache_enabled:
+            self._input_cache_left = left
+            self._input_cache_right = right
+
         return prob
 
     def sample(
-        self, N: int, context: SamplingContext) -> Union[SamplingContext, torch.Tensor]:
+        self, num_samples: int, context: SamplingContext
+    ) -> Union[SamplingContext, torch.Tensor]:
 
         # Sum weights are of shape: [D, IC//2, IC//2, OC, R]
         # We now want to use `indices` to access one in_channel for each in_feature x out_channels block
         # index is of size in_feature
         weights = self.weights
-        D, IC2, IC2, OC, R = weights.shape
-        N = context.num_samples
+        in_features, in_channels, in_channels, out_channels, num_repetitions = weights.shape
+        num_samples = context.num_samples
 
         if context.is_root:
-            assert OC == 1 and R == 1, "Cannot start sampling from non-root layer."
+            assert (
+                out_channels == 1 and num_repetitions == 1
+            ), "Cannot start sampling from non-root layer."
 
             # Initialize rep indices
-            context.repetition_indices = torch.zeros(N, dtype=int, device=weights.device)
+            context.repetition_indices = torch.zeros(num_samples, dtype=int, device=weights.device)
 
             # Select weights, repeat n times along the last dimension
-            weights = weights[:, :, :, [0] * N, 0]  # Shape: [D, IC2, IC2, N]
+            weights = weights[:, :, :, [0] * num_samples, 0]  # Shape: [D, IC2, IC2, N]
 
             # Move sample dimension to the first axis: [feat, channels, batch] -> [batch, feat, channels]
             weights = weights.permute(3, 0, 1, 2)  # Shape: [N, D, IC2, IC2]
 
         else:
-            tmp = torch.zeros(N, D, IC2, IC2, device=weights.device)
-            for i in range(N):
+            self._check_repetition_indices(context)
+
+            tmp = torch.zeros(
+                num_samples, in_features, in_channels, in_channels, device=weights.device
+            )
+            for i in range(num_samples):
                 tmp[i, :, :, :] = weights[
-                    range(D),
+                    range(in_features),
                     :,
                     :,
                     context.parent_indices[i],  # access the chosen output sum node
@@ -625,11 +642,28 @@ class EinsumLayer(AbstractLayer):
         weights = F.softmax(weights, dim=2)
         log_weights = F.log_softmax(weights / context.temperature_sums, dim=2)
 
+        # If evidence is given, adjust the weights with the likelihoods of the observed paths
+        if self._is_input_cache_enabled and self._input_cache_left is not None:
+            for i in range(num_samples):
+                # Reweight the i-th samples weights by its likelihood values at the correct repetition
+                lls_left = self._input_cache_left[i, :, :, context.repetition_indices[i]].unsqueeze(
+                    2
+                )
+                lls_right = self._input_cache_right[
+                    i, :, :, context.repetition_indices[i]
+                ].unsqueeze(1)
+                lls = (lls_left + lls_right).view(in_features, in_channels ** 2)
+                log_prior = log_weights[i, :, :]
+                log_posterior = log_prior + lls
+                log_posterior = log_posterior - torch.logsumexp(log_posterior, 1, keepdim=True)
+                log_weights[i] = log_posterior
         if context.is_mpe:
             indices = weights.argmax(dim=2)
+            indices = log_weights.argmax(dim=2)
         else:
             # Create categorical distribution to sample from
             dist = torch.distributions.Categorical(probs=weights)
+            dist = torch.distributions.Categorical(logits=log_weights)
 
             indices = dist.sample()
 
@@ -643,5 +677,32 @@ class EinsumLayer(AbstractLayer):
         return (
             "EinsumLayer(in_channels={}, in_features={}, out_channels={}, out_shape={})".format(
                 self.in_channels, self.in_features, self.out_channels, self.out_shape
+    def _check_repetition_indices(self, context: SamplingContext):
+        assert context.repetition_indices.shape[0] == context.parent_indices.shape[0]
+        if self.num_repetitions > 1 and context.repetition_indices is None:
+            raise Exception(
+                f"Sum layer has multiple repetitions (num_repetitions=={self.num_repetitions}) but repetition_indices argument was None, expected a Long tensor size #samples."
             )
+        if self.num_repetitions == 1 and context.repetition_indices is None:
+            context.repetition_indices = torch.zeros(
+                context.num_samples, dtype=int, device=self.__device
+            )
+
+    def _enable_input_cache(self):
+        """Enables the input cache. This will store the input in forward passes into `self.__input_cache`."""
+        self._is_input_cache_enabled = True
+
+    def _disable_input_cache(self):
+        """Disables and clears the input cache."""
+        self._is_input_cache_enabled = False
+        self._input_cache_left = None
+        self._input_cache_right = None
+
+    def __repr__(self):
+        return "EinsumLayer(in_channels={}, in_features={}, out_channels={}, out_shape={}, weights_shape={})".format(
+            self.in_channels,
+            self.in_features,
+            self.out_channels,
+            self.out_shape,
+            self.weights.shape,
         )
