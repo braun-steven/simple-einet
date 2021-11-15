@@ -261,19 +261,28 @@ class MultivariateNormal(Leaf):
 
         # Create gaussian means and covs
         self.means = nn.Parameter(
-            torch.randn(out_channels * self._n_dists, cardinality)
+            torch.randn(out_channels * self._n_dists * self.num_repetitions, cardinality)
         )
 
         # Generate covariance matrix via the cholesky decomposition: s = A'A where A is a triangular matrix
         # Further ensure, that diag(a) > 0 everywhere, such that A has full rank
-        rand = torch.rand(out_channels * self._n_dists, cardinality, cardinality)
+        rand = torch.zeros(
+            out_channels * self._n_dists * self.num_repetitions, cardinality, cardinality
+        )
 
-        # Make a matrices triangular
-        for i in range(out_channels * self._n_dists):
-            rand[i, :, :].tril_()
+        for i in range(cardinality):
+            rand[:, i, i] = 1.0
 
-        self.triangular = nn.Parameter(rand)
-        self._mv = dist.MultivariateNormal(loc=self.means, scale_tril=self.triangular)
+        rand = rand + torch.randn_like(rand) * 1e-2
+
+        # Make matrices triangular
+        trils = rand.tril()
+
+        self.triangular = nn.Parameter(trils)
+        # self._mv = dist.MultivariateNormal(loc=self.means, scale_tril=self.triangular)
+        # Reassign means since mv __init__ creates a copy and thus would loose track for autograd
+        # self._mv.loc.requires_grad_(True)
+        # self.means = nn.Parameter(self._mv.loc)
 
         self.out_shape = f"(N, {self._out_features}, {self.out_channels})"
 
@@ -285,15 +294,27 @@ class MultivariateNormal(Leaf):
         # Make room for out_channels of layer
         # Output shape: [n, 1, d]
         batch_size = x.shape[0]
-        x = x.view(batch_size, self._n_dists, self.cardinality)
-        x = x.repeat(1, self.out_channels, 1)
+        # Push repetitions into dim=1
+        x = x.permute(0, 2, 1)
+
+        # Split features into groups
+        x = x.view(
+            batch_size, self.num_repetitions, self._n_dists, self.cardinality
+        )
+
+        # Repeat groups by number of output_channels
+        x = x.repeat(1, 1, self.out_channels, 1)
+
+        # Merge groups and repetitions
+        x = x.view(batch_size, self.num_repetitions * self._n_dists * self.out_channels, self.cardinality)
 
         # Compute multivariate gaussians
         # Output shape: [n, out_channels, d / cardinality]
-        x = self._mv.log_prob(x)
-
-        # Output shape: [n, d / cardinality, out_channels]
-        x = x.view(batch_size, self._n_dists, self.out_channels)
+        mv = self._get_base_distribution()
+        x = mv.log_prob(x)
+        # x = self._mv.log_prob(x)
+        x = x.view(batch_size, self.num_repetitions , self._n_dists , self.out_channels)
+        x = x.permute(0, 2, 3, 1)
 
         # Marginalize and apply dropout
         x = self._marginalize_input(x)
