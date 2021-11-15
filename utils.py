@@ -7,7 +7,7 @@ from torch import nn
 
 
 @contextmanager
-def provide_evidence(spn: nn.Module, evidence: torch.Tensor, requires_grad=False):
+def provide_evidence(spn: nn.Module, evidence: torch.Tensor=None, requires_grad=False):
     """
     Context manager for sampling with evidence. In this context, the SPN graph is reweighted with the likelihoods
     computed using the given evidence.
