@@ -185,6 +185,7 @@ class Sum(AbstractLayer):
 
         # Apply softmax to ensure they are proper probabilities
         log_weights = F.log_softmax(weights, dim=2)
+        log_weights = F.log_softmax(weights / context.temperature_sums, dim=2)
 
         # If evidence is given, adjust the weights with the likelihoods of the observed paths
         if self._is_input_cache_enabled and self._input_cache is not None:
@@ -622,6 +623,7 @@ class EinsumLayer(AbstractLayer):
         weights = weights.view(N, D, IC2 ** 2)
 
         weights = F.softmax(weights, dim=2)
+        log_weights = F.log_softmax(weights / context.temperature_sums, dim=2)
 
         if context.is_mpe:
             indices = weights.argmax(dim=2)

@@ -87,6 +87,10 @@ def dist_sample(
     if context.is_mpe:
         samples = _mode(distribution, context)
     else:
+        if type(distribution) == dist.Normal:
+            distribution = dist.Normal(
+                loc=distribution.loc, scale=distribution.scale * context.temperature_leaves
+            )
         samples = distribution.sample(sample_shape=(context.num_samples,))
 
     assert (

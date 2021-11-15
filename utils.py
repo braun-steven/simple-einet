@@ -57,6 +57,15 @@ class SamplingContext:
     # MPE flag, if true, will perform most probable explanation sampling
     is_mpe: bool = False
 
+    # Temperature for sampling at the leaves
+    temperature_leaves: float = 1.0
+
+    # Temperature for sampling at the einsumlayers
+    temperature_sums: float = 1.0
+
+    # Number of repetitions
+    num_repetitions: int = None
+
     def __setattr__(self, key, value):
         if hasattr(self, key):
             super().__setattr__(key, value)
