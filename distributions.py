@@ -396,9 +396,7 @@ class Beta(Leaf):
 class Cauchy(Leaf):
     """Cauchy layer. Maps each input feature to cauchy beta log likelihood."""
 
-    def __init__(
-        self, in_features: int, out_channels: int, num_repetitions: int = 1, dropout=0.0
-    ):
+    def __init__(self, in_features: int, out_channels: int, num_repetitions: int = 1, dropout=0.0):
         """Creat a cauchy layer.
 
         Args:
@@ -408,12 +406,8 @@ class Cauchy(Leaf):
 
         """
         super().__init__(in_features, out_channels, num_repetitions, dropout)
-        self.means = nn.Parameter(
-            torch.randn(1, in_features, out_channels, num_repetitions)
-        )
-        self.stds = nn.Parameter(
-            torch.rand(1, in_features, out_channels, num_repetitions)
-        )
+        self.means = nn.Parameter(torch.randn(1, in_features, out_channels, num_repetitions))
+        self.stds = nn.Parameter(torch.rand(1, in_features, out_channels, num_repetitions))
         self.cauchy = dist.Cauchy(loc=self.means, scale=self.stds)
 
     def _get_base_distribution(self):
@@ -423,9 +417,7 @@ class Cauchy(Leaf):
 class Chi2(Leaf):
     """Chi square distribution layer"""
 
-    def __init__(
-        self, in_features: int, out_channels: int, num_repetitions: int = 1, dropout=0.0
-    ):
+    def __init__(self, in_features: int, out_channels: int, num_repetitions: int = 1, dropout=0.0):
         """Creat a chi square layer.
 
         Args:
@@ -435,9 +427,7 @@ class Chi2(Leaf):
 
         """
         super().__init__(in_features, out_channels, num_repetitions, dropout)
-        self.df = nn.Parameter(
-            torch.rand(1, in_features, out_channels, num_repetitions)
-        )
+        self.df = nn.Parameter(torch.rand(1, in_features, out_channels, num_repetitions))
         self.chi2 = dist.Chi2(df=self.df)
 
     def _get_base_distribution(self):
