@@ -38,7 +38,10 @@ def dist_forward(distribution, x):
         x = x.unsqueeze(2).unsqueeze(3)  # Shape: [n, d, 1, 1]
 
     # Compute log-likelihodd
+    marg_mask = torch.isnan(x)
+    x[marg_mask] = 0.0
     x = distribution.log_prob(x)  # Shape: [n, d, oc, r]
+    x[marg_mask.repeat(1, 1, x.shape[2], 1)] = float("nan")
 
     return x
 
