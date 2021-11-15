@@ -84,5 +84,5 @@ def invert_permutation(p: torch.Tensor):
     Taken from: https://stackoverflow.com/a/25535723, adapted to PyTorch.
     """
     s = torch.empty(p.shape[0], dtype=p.dtype, device=p.device)
-    s[p] = torch.arange(p.shape[0])
+    s[p] = torch.arange(p.shape[0], device=p.device)
     return s
