@@ -702,9 +702,10 @@ class IndependentMultivariate(Leaf):
             num_repetitions=num_repetitions,
             **leaf_base_kwargs,
         )
-        self._pad = (cardinality - self.in_features % cardinality) % cardinality
+        self._pad = pad
         # Number of input features for the product needs to be extended depending on the padding applied here
-        prod_in_features = in_features + self._pad
+
+        prod_in_features = in_features
         self.prod = Product(
             in_features=prod_in_features,
             cardinality=cardinality,
@@ -713,7 +714,7 @@ class IndependentMultivariate(Leaf):
 
         self.cardinality = check_valid(cardinality, int, 1, in_features + 1)
         self.out_shape = (
-            f"(N, {self.prod._out_features}, {out_channels}, {self.num_repetitions})"
+            f"(N, {self.prod._out_features + pad}, {out_channels}, {self.num_repetitions})"
         )
 
     def _init_weights(self):
@@ -742,7 +743,7 @@ class IndependentMultivariate(Leaf):
 
         # Remove padding
         if self._pad:
-            context.parent_indices = context.parent_indices[:, : -self._pad]
+            context.parent_indices = context.parent_indices[:, : -self._pad * self.cardinality]
 
         samples = self.base_leaf.sample(context=context)
         return samples
