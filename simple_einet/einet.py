@@ -8,11 +8,11 @@ import numpy as np
 import torch
 from torch import nn
 
-from clipper import DistributionClipper
-from distributions import IndependentMultivariate, Leaf, MultivariateNormal, truncated_normal_
-from layers import CrossProduct, EinsumLayer, Product, Sum
-from type_checks import check_valid
-from utils import SamplingContext, invert_permutation, provide_evidence
+from .clipper import DistributionClipper
+from .distributions import IndependentMultivariate, Leaf, MultivariateNormal, truncated_normal_
+from .layers import CrossProduct, EinsumLayer, Product, Sum
+from .type_checks import check_valid
+from .utils import SamplingContext, invert_permutation, provide_evidence
 
 logger = logging.getLogger(__name__)
 
@@ -304,24 +304,24 @@ class Einet(nn.Module):
 
         Possible valid inputs:
 
-        - `n`: Generates `n` samples.
-        - `n` and `class_index (int)`: Generates `n` samples from P(X | C = class_index).
+        - `num_samples`: Generates `num_samples` samples.
+        - `num_samples` and `class_index (int)`: Generates `num_samples` samples from P(X | C = class_index).
         - `class_index (List[int])`: Generates `len(class_index)` samples. Each index `c_i` in `class_index` is mapped
             to a sample from P(X | C = c_i)
         - `evidence`: If evidence is given, samples conditionally and fill NaN values.
 
         Args:
-            n: Number of samples to generate.
-            class_index: Class index. Can be either an int in combination with a value for `n` which will result in `n`
+            num_samples: Number of samples to generate.
+            class_index: Class index. Can be either an int in combination with a value for `num_samples` which will result in `num_samples`
                 samples from P(X | C = class_index). Or can be a list of ints which will map each index `c_i` in the
                 list to a sample from P(X | C = c_i).
-            evidence: Evidence that can be provided to condition the samples. If evidence is given, `n` and
+            evidence: Evidence that can be provided to condition the samples. If evidence is given, `num_samples` and
                 `class_index` must be `None`. Evidence must contain NaN values which will be imputed according to the
                 distribution represented by the SPN. The result will contain the evidence and replace all NaNs with the
                 sampled values.
             is_mpe: Flag to perform max sampling (MPE).
             temperature_leaves: Variance scaling for leaf distribution samples.
-            temperature_leaves: Variance scaling for sum node categorical sampling.
+            temperature_sums: Variance scaling for sum node categorical sampling.
 
         Returns:
             torch.Tensor: Samples generated according to the distribution specified by the SPN.
@@ -332,7 +332,7 @@ class Einet(nn.Module):
         ), "Cannot provide both, evidence and class indices."
         assert (
             num_samples is None or evidence is None
-        ), "Cannot provide both, number of samples to generate (n) and evidence."
+        ), "Cannot provide both, number of samples to generate (num_samples) and evidence."
 
         # Check if evidence contains nans
         if evidence is not None:
