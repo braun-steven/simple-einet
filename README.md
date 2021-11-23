@@ -4,24 +4,39 @@ This repository contains code for my personal, simplistic, EinsumNetworks implem
 
 ## Usage Example
 
-``` python
-from distributions import Normal
+```python
+import torch
+from simple_einet.clipper import DistributionClipper
+from simple_einet.distributions import Normal
+from simple_einet.einet import Einet
+from simple_einet.einet import EinetConfig
+
 torch.manual_seed(0)
 
 # Input dimensions
 in_features = 4
 batchsize = 5
+out_features = 3
 
 # Create input sample
 x = torch.randn(batchsize, in_features)
 
 # Construct Einet
-einet = Einet(K=2, D=2, R=2, in_features=in_features, leaf_cls=Normal)
+einet = Einet(EinetConfig(
+    in_features=in_features,
+    D=2,
+    S=2,
+    I=2,
+    R=3,
+    C=out_features,
+    dropout=0.5,
+    leaf_base_class=Normal,
+))
 
 # Compute log-likelihoods
 lls = einet(x)
 print(f"lls={lls}")
-print(f"lss.shape={lls.shape}")
+print(f"lls.shape={lls.shape}")
 
 # Construct samples
 samples = einet.sample(2)
@@ -46,13 +61,13 @@ for _ in range(1000):
     optim.step()
 
     # Clip leaf distribution parameters (e.g. std > 0.0, etc.)
-    clipper(einet.leaf)
+    clipper(einet._leaf)
 ```
 
 
 ## Citing EinsumNetworks
 
-``` bibtex
+```bibtex
 @inproceedings{pmlr-v119-peharz20a,
   title = {Einsum Networks: Fast and Scalable Learning of Tractable Probabilistic Circuits},
   author = {Peharz, Robert and Lang, Steven and Vergari, Antonio and Stelzner, Karl and Molina, Alejandro and Trapp, Martin and Van Den Broeck, Guy and Kersting, Kristian and Ghahramani, Zoubin},
@@ -69,4 +84,3 @@ for _ in range(1000):
   code = {https://github.com/cambridge-mlg/EinsumNetworks},
 }
 ```
-
