@@ -2,6 +2,17 @@
 
 This repository contains code for my personal, simplistic, EinsumNetworks implementation.
 
+## Installation
+
+```shell
+git clone git@github.com:steven-lang/simple-einet.git
+cd simple-einet
+pip install .
+
+# Or if you plan to edit the files after installation:
+pip install -e .
+```
+
 ## Usage Example
 
 ```python
