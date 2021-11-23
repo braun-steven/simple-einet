@@ -71,7 +71,7 @@ class EinetConfig:
 
         if 2 ** self.D > self.F:
             raise Exception(
-                f"The tree depth D={self.D} must be <= {np.floor(np.log2(self.F))} (log2(in_features)."
+                f"The tree depth D={self.D} must be <= {np.floor(np.log2(self.F))} (log2(in_features))."
             )
 
     def __setattr__(self, key, value):
