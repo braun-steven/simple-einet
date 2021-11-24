@@ -241,12 +241,12 @@ class Binomial(Leaf):
         self.total_count = check_valid(total_count, int, lower_bound=1)
 
         # Create binomial parameters
-        self.logits = nn.Parameter(torch.randn(1, in_features, out_channels, num_repetitions))
+        self.probs = nn.Parameter(torch.rand(1, in_features, out_channels, num_repetitions))
 
 
     def _get_base_distribution(self):
         # Use sigmoid to ensure, that probs are in valid range
-        return dist.Binomial(self.total_count, logits=self.logits)
+        return dist.Binomial(self.total_count, probs=self.probs.sigmoid())
 
 
 
