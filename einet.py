@@ -352,8 +352,8 @@ class Einet(nn.Module):
             # Obtain repetition indices
             ctx.repetition_indices = (ctx.parent_indices % self.config.R).squeeze(1)
             # Shift indices
-            ctx.parent_indices = ctx.parent_indices // self.config.R
-            # ctx.parent_indices = ctx.parent_indices % num_roots
+            # ctx.parent_indices = ctx.parent_indices // self.config.R
+            ctx.parent_indices = torch.div(ctx.parent_indices, self.config.R, rounding_mode="floor")
 
             # Now each sample in `indices` belongs to one repetition, index in `repetition_indices`
 
