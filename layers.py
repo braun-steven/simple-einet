@@ -217,13 +217,12 @@ class Sum(AbstractLayer):
             )
 
     def __repr__(self):
-        return "Sum(in_channels={}, in_features={}, out_channels={}, dropout={}, out_shape={}, weights_shape={})".format(
+        return "Sum(in_channels={}, in_features={}, out_channels={}, dropout={}, out_shape={})".format(
             self.in_channels,
             self.in_features,
             self.out_channels,
             self.dropout,
             self.out_shape,
-            self.weights.shape,
         )
 
 
@@ -492,6 +491,7 @@ class EinsumLayer(AbstractLayer):
         in_channels: int,
         out_channels: int,
         num_repetitions: int = 1,
+        dropout: float = 0.0
     ):
         super().__init__(in_features, num_repetitions)
 
@@ -540,6 +540,10 @@ class EinsumLayer(AbstractLayer):
             requires_grad=False,
         )
 
+        # Dropout
+        self.dropout = check_valid(dropout, expected_type=float, lower_bound=0.0, upper_bound=1.0)
+        self._bernoulli_dist = torch.distributions.Bernoulli(probs=self.dropout)
+
         # Necessary for sampling with evidence: Save input during forward pass.
         self._is_input_cache_enabled = False
         self._input_cache_left = None
@@ -557,6 +561,13 @@ class EinsumLayer(AbstractLayer):
         Returns:
             torch.Tensor: Output of shape [batch, ceil(in_features/2), channel * channel].
         """
+
+        # Apply dropout: Set random sum node children to 0 (-inf in log domain)
+        if self.dropout > 0.0 and self.training:
+            dropout_indices = self._bernoulli_dist.sample(x.shape).bool()
+            x[dropout_indices] = np.NINF
+
+
         # Check if padding to next power of 2 is necessary
         if self.in_features != x.shape[1]:
             # Compute necessary padding to the next power of 2

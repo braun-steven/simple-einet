@@ -2,17 +2,23 @@
 
 import logging
 from dataclasses import dataclass
-from typing import Dict, Type
+from typing import Dict, List, Type
 
 import numpy as np
 import torch
 from torch import nn
 
 from clipper import DistributionClipper
-from distributions import IndependentMultivariate, Leaf, MultivariateNormal, truncated_normal_
-from layers import CrossProduct, EinsumLayer, Product, Sum
+from factorized_leaf_layer import FactorizedLeaf
+from distributions import (
+    Leaf,
+    RatNormal,
+    truncated_normal_,
+)
+from layers import Sum
+from einsum_layer import EinsumLayer
 from type_checks import check_valid
-from utils import SamplingContext, invert_permutation, provide_evidence
+from utils import SamplingContext, provide_evidence
 
 logger = logging.getLogger(__name__)
 
@@ -111,65 +117,20 @@ class Einet(nn.Module):
         # Initialize weights
         self._init_weights()
 
-        # Obtain permutation indices
-        self._make_random_repetition_permutation_indices()
-
-    def _make_random_repetition_permutation_indices(self):
-        """Create random permutation indices for each repetition."""
-        rand_indices = torch.empty(size=(self.config.F, self.config.R))
-        for r in range(self.config.R):
-            # Each repetition has its own randomization
-            rand_indices[:, r] = torch.tensor(np.random.permutation(self.config.F))
-        rand_indices = rand_indices.long()
-
-        # Construct inverse indices necessary during sampling
-        inv_rand_indices = torch.empty_like(rand_indices)
-        for r in range(self.config.R):
-            inv_rand_indices[:, r] = invert_permutation(rand_indices[:, r])
-
-        # Register as buffer so it persists when storing etc.
-        self.register_buffer("rand_indices", rand_indices)
-        self.register_buffer("inv_rand_indices", inv_rand_indices)
-
-    def _randomize(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Randomize the input at each repetition according to `self.rand_indices`.
-
-        Args:
-            x: Input.
-
-        Returns:
-            torch.Tensor: Randomized input along feature axis. Each repetition has its own permutation.
-        """
-        # Expand input to the number of repetitions
-        x = x.unsqueeze(2)  # Make space for repetition axis
-        x = x.repeat((1, 1, self.config.R))  # Repeat R times
-
-        # Random permutation
-        for r in range(self.config.R):
-            # Get permutation indices for the r-th repetition
-            perm_indices = self.rand_indices[:, r]
-
-            # Permute the features of the r-th version of x using the indices
-            x[:, :, r] = x[:, perm_indices, r]
-
-        return x
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, marginalization_mask: torch.Tensor = None) -> torch.Tensor:
         """
         Forward pass through RatSpn. Computes the conditional log-likelihood P(X | C).
 
         Args:
             x: Input.
+            marginalization_mask: Leaf marginalization mask. True indicates, that the specific scope
+                is missing.
 
         Returns:
-            torch.Tensor: Conditional log-likelihood P(X | C) of the input.
+            Log-likelihood tensor of the input: p(X) or p(X | C) if number of classes > 1.
         """
-        # Apply feature randomization for each repetition
-        x = self._randomize(x)
-
         # Apply leaf distributions (replace marginalization indicators with 0.0 first)
-        x = self._leaf(x)
+        x = self._leaf(x, marginalization_mask)
 
         # Pass through intermediate layers
         x = self._forward_layers(x)
@@ -177,8 +138,10 @@ class Einet(nn.Module):
         # Merge results from the different repetitions into the channel dimension
         batch_size, features, channels, repetitions = x.size()
         assert features == 1  # number of features should be 1 at this point
-        assert channels == 1  # number of channels should be 1 at this point
-        x = x.view(batch_size, 1, repetitions, 1)
+        assert channels == self.config.C
+
+        # Treat repetitions as additional channels at this point
+        x = x.reshape(batch_size, 1, channels * repetitions, 1)
 
         # Apply C sum node outputs
         x = self.root(x)
@@ -217,25 +180,29 @@ class Einet(nn.Module):
 
         # Construct leaf
         self._leaf = self._build_input_distribution()
-        self._inner_layers = nn.ModuleList()
+        self._inner_layers: List[EinsumLayer] = nn.ModuleList()
 
         # Sum and product layers
         for i in np.arange(start=self.config.D, stop=0, step=-1):
             # Current in_features
             in_features = 2 ** i
 
-            _out_channels = self.config.S if i > 1 else 1
+            _out_channels = self.config.S if i > 1 else self.config.C
             einsumlayer = EinsumLayer(
                 in_features=in_features,
                 in_channels=self.config.S,
                 out_channels=_out_channels,
                 num_repetitions=self.config.R,
+                dropout=self.config.dropout,
             )
             self._inner_layers.append(einsumlayer)
 
         # Construct root layer
         self.root = Sum(
-            in_channels=self.config.R, in_features=1, num_repetitions=1, out_channels=self.config.C
+            in_channels=self.config.R * self.config.C,
+            in_features=1,
+            num_repetitions=1,
+            out_channels=self.config.C,
         )
 
         # Construct sampling root with weights according to priors for sampling
@@ -250,17 +217,19 @@ class Einet(nn.Module):
     def _build_input_distribution(self):
         """Construct the input distribution layer."""
         # Cardinality is the size of the region in the last partitions
-        cardinality = np.ceil(self.config.F / (2 ** self.config.D)).astype(int)
-        pad = int(2 ** self.config.D - self.config.F / cardinality)
-        return IndependentMultivariate(
-            in_features=self.config.F,
+        base_leaf = self.config.leaf_base_class(
             out_channels=self.config.I,
-            num_repetitions=self.config.R,
-            cardinality=cardinality,
+            in_features=self.config.F,
             dropout=self.config.dropout,
-            leaf_base_class=self.config.leaf_base_class,
-            leaf_base_kwargs=self.config.leaf_base_kwargs,
-            pad=pad,
+            num_repetitions=self.config.R,
+            **self.config.leaf_base_kwargs,
+        )
+
+        return FactorizedLeaf(
+            in_features=self.config.F,
+            out_features=2 ** self.config.D,
+            num_repetitions=self.config.R,
+            base_leaf=base_leaf,
         )
 
     @property
@@ -277,6 +246,10 @@ class Einet(nn.Module):
 
             if isinstance(module, Sum):
                 truncated_normal_(module.weights, std=0.5)
+                continue
+
+            if isinstance(module, RatNormal):
+                truncated_normal_(module.stds, std=0.1)
                 continue
 
     def mpe(self, evidence: torch.Tensor) -> torch.Tensor:
@@ -298,6 +271,7 @@ class Einet(nn.Module):
         is_mpe: bool = False,
         temperature_leaves: float = 1.0,
         temperature_sums: float = 1.0,
+        marginalized_scopes: List[int] = None,
     ):
         """
         Sample from the distribution represented by this SPN.
@@ -336,12 +310,10 @@ class Einet(nn.Module):
 
         # Check if evidence contains nans
         if evidence is not None:
-            assert (evidence != evidence).any(), "Evidence has no NaN values."
-
             # Set n to the number of samples in the evidence
             num_samples = evidence.shape[0]
 
-        with provide_evidence(self, evidence):  # May be None but that's ok
+        with provide_evidence(self, evidence, marginalized_scopes):
             # If class is given, use it as base index
             if class_index is not None:
                 if isinstance(class_index, list):
@@ -372,15 +344,16 @@ class Einet(nn.Module):
                 )
                 ctx = self._sampling_root.sample(context=ctx)
 
-            # Sample from RatSpn root layer: Results are indices into the stacked output channels of all repetitions
+            # Sample from RatSpn root layer: Results are indices into the stacked output channels of
+            # the last layer (num_class) of all repetitions
             ctx.repetition_indices = torch.zeros(num_samples, dtype=int, device=self.__device)
             ctx = self.root.sample(context=ctx)
 
             # Obtain repetition indices
-            ctx.repetition_indices, ctx.parent_indices = (
-                ctx.parent_indices.squeeze(1),
-                ctx.repetition_indices,
-            )
+            ctx.repetition_indices = (ctx.parent_indices % self.config.R).squeeze(1)
+            # Shift indices
+            ctx.parent_indices = ctx.parent_indices // self.config.R
+            # ctx.parent_indices = ctx.parent_indices % num_roots
 
             # Now each sample in `indices` belongs to one repetition, index in `repetition_indices`
 
@@ -392,19 +365,10 @@ class Einet(nn.Module):
             # Sample leaf
             samples = self._leaf.sample(context=ctx)
 
-            # Invert permutation
-            for i in range(num_samples):
-                rep_index = ctx.repetition_indices[i]
-                inv_rand_indices = self.inv_rand_indices[:, rep_index]
-                samples[i, :] = samples[i, inv_rand_indices]
-
             if evidence is not None:
-                # Update NaN entries in evidence with the sampled values
-                nan_indices = torch.isnan(evidence)
-
                 # First make a copy such that the original object is not changed
                 evidence = evidence.clone()
-                evidence[nan_indices] = samples[nan_indices]
+                evidence[:, marginalized_scopes] = samples[:, marginalized_scopes]
                 return evidence
             else:
                 return samples
@@ -416,14 +380,25 @@ if __name__ == "__main__":
     torch.manual_seed(0)
 
     # Input dimensions
-    in_features = 4
+    in_features = 8
     batchsize = 5
 
     # Create input sample
     x = torch.randn(batchsize, in_features)
 
     # Construct Einet
-    einet = Einet(K=2, D=2, R=2, in_features=in_features, leaf_cls=Normal)
+    config = EinetConfig(
+        in_features=in_features,
+        D=2,
+        S=3,
+        I=3,
+        R=2,
+        dropout=0.0,
+        C=1,
+        leaf_base_class=RatNormal,
+        leaf_base_kwargs=dict(min_sigma=1e-3, max_sigma=1.0),
+    )
+    einet = Einet(config)
 
     # Compute log-likelihoods
     lls = einet(x)
@@ -437,7 +412,6 @@ if __name__ == "__main__":
 
     # Optimize Einet parameters (weights and leaf params)
     optim = torch.optim.Adam(einet.parameters(), lr=0.001)
-    clipper = DistributionClipper()
 
     for _ in range(1000):
         optim.zero_grad()
@@ -451,9 +425,6 @@ if __name__ == "__main__":
 
         # Update weights
         optim.step()
-
-        # Clip leaf distribution parameters (e.g. std > 0.0, etc.)
-        clipper(einet.leaf)
 
     # Construct samples
     samples = einet.sample(2)

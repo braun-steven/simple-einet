@@ -38,10 +38,7 @@ def dist_forward(distribution, x):
         x = x.unsqueeze(2).unsqueeze(3)  # Shape: [n, d, 1, 1]
 
     # Compute log-likelihodd
-    marg_mask = torch.isnan(x)
-    x[marg_mask] = 0.0
     x = distribution.log_prob(x)  # Shape: [n, d, oc, r]
-    x[marg_mask.repeat(1, 1, x.shape[2], 1)] = float("nan")
 
     return x
 
@@ -108,6 +105,9 @@ def dist_sample(distribution: dist.Distribution, context: SamplingContext = None
             -1
         )
 
+    if type(distribution) in (dist.Binomial, dist.Bernoulli):
+        samples = samples.long()
+
     return samples
 
 
@@ -138,6 +138,7 @@ class Leaf(AbstractLayer):
         dropout = check_valid(dropout, float, 0.0, 1.0)
         self.dropout = nn.Parameter(torch.tensor(dropout), requires_grad=False)
 
+        self.out_features = in_features
         self.out_shape = f"(N, {in_features}, {out_channels})"
 
         # Marginalization constant
@@ -153,17 +154,18 @@ class Leaf(AbstractLayer):
             x[dropout_indices] = 0.0
         return x
 
-    def _marginalize_input(self, x: torch.Tensor) -> torch.Tensor:
+    def _marginalize_input(self, x: torch.Tensor, marginalized_scopes: List[int]) -> torch.Tensor:
         # Marginalize nans set by user
-        x = torch.where(~torch.isnan(x), x, self.marginalization_constant)
+        if marginalized_scopes:
+            x[:, marginalized_scopes] = self.marginalization_constant
         return x
 
-    def forward(self, x):
+    def forward(self, x, marginalized_scopes: List[int]):
         # Forward through base distribution
         d = self._get_base_distribution()
         x = dist_forward(d, x)
 
-        x = self._marginalize_input(x)
+        x = self._marginalize_input(x, marginalized_scopes)
         x = self._apply_dropout(x)
 
         return x
@@ -231,6 +233,22 @@ class Bernoulli(Leaf):
         probs_ratio = torch.sigmoid(self.probs)
         return dist.Bernoulli(probs=probs_ratio)
 
+class Binomial(Leaf):
+
+    def __init__(self, in_features: int, out_channels: int, total_count: int, num_repetitions: int = 1, dropout=0):
+        super().__init__(in_features, out_channels, num_repetitions=num_repetitions, dropout=dropout)
+
+        self.total_count = check_valid(total_count, int, lower_bound=1)
+
+        # Create binomial parameters
+        self.logits = nn.Parameter(torch.randn(1, in_features, out_channels, num_repetitions))
+
+
+    def _get_base_distribution(self):
+        # Use sigmoid to ensure, that probs are in valid range
+        return dist.Binomial(self.total_count, logits=self.logits)
+
+
 
 class MultivariateNormal(Leaf):
     """Multivariate Gaussian layer."""
@@ -254,9 +272,10 @@ class MultivariateNormal(Leaf):
         """
         # TODO: Fix for num_repetitions
         super().__init__(in_features, out_channels, num_repetitions, dropout)
-        self.cardinality = check_valid(cardinality, int, 2, in_features + 1)
+        # self.cardinality = check_valid(cardinality, int, 2, in_features + 1)
+        self.cardinality = cardinality
         self._pad_value = in_features % cardinality
-        self._out_features = np.ceil(in_features / cardinality).astype(int)
+        self.out_features = np.ceil(in_features / cardinality).astype(int)
         self._n_dists = np.ceil(in_features / cardinality).astype(int)
 
         # Create gaussian means and covs
@@ -273,7 +292,7 @@ class MultivariateNormal(Leaf):
         for i in range(cardinality):
             rand[:, i, i] = 1.0
 
-        rand = rand + torch.randn_like(rand) * 1e-2
+        rand = rand + torch.randn_like(rand) * 1e-1
 
         # Make matrices triangular
         trils = rand.tril()
@@ -284,9 +303,9 @@ class MultivariateNormal(Leaf):
         # self._mv.loc.requires_grad_(True)
         # self.means = nn.Parameter(self._mv.loc)
 
-        self.out_shape = f"(N, {self._out_features}, {self.out_channels})"
+        self.out_shape = f"(N, {self.out_features}, {self.out_channels})"
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor, marginalized_scopes: List[int]) -> torch.Tensor:
         # Pad dummy variable via reflection
         if self._pad_value != 0:
             x = F.pad(x, pad=[0, 0, 0, self._pad_value], mode="reflect")
@@ -295,26 +314,29 @@ class MultivariateNormal(Leaf):
         # Output shape: [n, 1, d]
         batch_size = x.shape[0]
         # Push repetitions into dim=1
-        x = x.permute(0, 2, 1)
+        x = x.permute(0, 2, 1)  # [n, r, d]
 
         # Split features into groups
         x = x.view(
-            batch_size, self.num_repetitions, self._n_dists, self.cardinality
-        )
+            batch_size, self.num_repetitions, 1, self._n_dists, self.cardinality
+        )  # [n, r, 1, d/k, k]
 
         # Repeat groups by number of output_channels
-        x = x.repeat(1, 1, self.out_channels, 1)
+        x = x.repeat(1, 1, self.out_channels, 1, 1)  #  [n, r, oc, d/k, k]
 
         # Merge groups and repetitions
-        x = x.view(batch_size, self.num_repetitions * self._n_dists * self.out_channels, self.cardinality)
+        x = x.view(
+            batch_size, self.num_repetitions * self.out_channels * self._n_dists, self.cardinality
+        )  #  [n, r * d/k * oc, k]
 
         # Compute multivariate gaussians
         # Output shape: [n, out_channels, d / cardinality]
         mv = self._get_base_distribution()
-        x = mv.log_prob(x)
-        # x = self._mv.log_prob(x)
-        x = x.view(batch_size, self.num_repetitions , self._n_dists , self.out_channels)
-        x = x.permute(0, 2, 3, 1)
+        x = mv.log_prob(x)  #  [n, r * d/k * oc]
+        x = x.view(
+            batch_size, self.num_repetitions, self.out_channels, self._n_dists
+        )  # [n, r, oc, d/k]
+        x = x.permute(0, 3, 2, 1)  # [n, d/k, oc, r]
 
         # Marginalize and apply dropout
         x = self._marginalize_input(x)
@@ -331,35 +353,46 @@ class MultivariateNormal(Leaf):
         else:
             samples = mv.sample(sample_shape=(context.num_samples,))
 
-            samples = samples.view(context.num_samples, self.num_repetitions, self._n_dists, self.out_channels, self.cardinality)
-            samples = samples.permute(0, 2, 4, 3, 1)
-            samples = samples.reshape(context.num_samples, self._n_dists * self.cardinality, self.out_channels, self.num_repetitions)
+            samples = samples.view(
+                context.num_samples,
+                self.num_repetitions,
+                self.out_channels,
+                self._n_dists,
+                self.cardinality,
+            )
 
-        num_samples, num_features, out_channels, num_repetitions = samples.shape
+        num_samples, num_repetitions, out_channels, n_dists, cardinality = samples.shape
 
         # Filter each sample by its specific repetition
-        tmp = torch.zeros(num_samples, num_features, out_channels, device=context.repetition_indices.device)
+        tmp = torch.zeros(
+            num_samples,
+            out_channels,
+            n_dists,
+            cardinality,
+            device=context.repetition_indices.device,
+        )
         for i in range(num_samples):
-            tmp[i, :, :] = samples[i, :, :, context.repetition_indices[i]]
-        samples = tmp
+            tmp[i] = samples[i, context.repetition_indices[i], ...]
+
+        samples = tmp  # [n, oc, d/k, k]
 
         # If parent index into out_channels are given
-        indices = torch.repeat_interleave(
-            context.parent_indices, repeats=self.cardinality, dim=1
-        )
-        # indices = context.parent_indices.repeat(1, self.cardinality)
+
         if context.parent_indices is not None:
+            indices = context.parent_indices.unsqueeze(1).unsqueeze(-1).repeat(1, 1, 1, cardinality)
             # Choose only specific samples for each feature/scope
-            samples = torch.gather(samples, dim=2, index=indices.unsqueeze(-1)).squeeze(
-                -1
-            )
+            samples = torch.gather(samples, dim=1, index=indices).squeeze(-1)
+
+        samples = samples.squeeze(0)  # Squeeze out_channels dim
+        samples = samples.view(
+            context.num_samples,
+            self._n_dists * self.cardinality,
+        )
 
         return samples
 
-
-
     def _get_base_distribution(self):
-        triang = self.triangular.clip(min=1e-5).tril()
+        triang = self.triangular.sigmoid().tril()
         mv = dist.MultivariateNormal(loc=self.means, scale_tril=triang)
         return mv
 
@@ -469,7 +502,7 @@ class Mixture(Leaf):
     def _get_base_distribution(self):
         raise Exception("Not implemented")
 
-    def forward(self, x):
+    def forward(self, x, marginalized_scopes: List[int]):
         results = [d(x) for d in self.representations]
 
         # Stack along output channel dimension
@@ -546,7 +579,7 @@ class IsotropicMultivariateNormal(Leaf):
             loc=self.means, cov_factor=self.cov_factors, cov_diag=self.stds
         )
 
-    def forward(self, x):
+    def forward(self, x, marginalized_scopes: List[int]):
         # TODO: Fix for num_repetitions
 
         # Pad dummy variable via reflection
@@ -677,90 +710,94 @@ class RatNormal(Leaf):
         return gauss
 
 
-class IndependentMultivariate(Leaf):
-    def __init__(
-        self,
-        in_features: int,
-        out_channels: int,
-        cardinality: int,
-        num_repetitions: int = 1,
-        dropout: float = 0.0,
-        leaf_base_class: Leaf = RatNormal,
-        leaf_base_kwargs: Dict = None,
-        pad=None,
-    ):
-        """
-        Create multivariate distribution that only has non zero values in the covariance matrix on the diagonal.
+class FactorizedLeaf(AbstractLayer):
+    """
+    A 'meta'-leaf layer that combines multiple scopes of a base-leaf layer via naive factorization.
 
+    Attributes:
+        base_leaf: Base leaf layer that contains the actual leaf distribution.
+        in_features: Number of input features/RVs.
+        out_features: Number of output features/RVs. This determines the factorization group size (round(in_features / out_features))
+        scopes: One-hot mapping from which in_features correspond to which out_features.
+
+    """
+
+    def __init__(self, in_features: int, out_features: int, num_repetitions, base_leaf: Leaf):
+        """
         Args:
-            out_channels: Number of parallel representations for each input feature.
-            cardinality: Number of variables per gauss.
-            in_features: Number of input features.
-            dropout: Dropout probabilities.
-            leaf_base_class (Leaf): The encapsulating base leaf layer class.
-
+            in_features (int): Number of input features/RVs.
+            out_features (int): Number of output features/RVs.
+            num_repetitions (int): Number of repetitions.
+            base_leaf (Leaf): Base leaf distribution object.
         """
-        super(IndependentMultivariate, self).__init__(
-            in_features, out_channels, num_repetitions, dropout
-        )
-        if leaf_base_kwargs is None:
-            leaf_base_kwargs = {}
 
-        self.base_leaf = leaf_base_class(
-            out_channels=out_channels,
-            in_features=in_features,
-            dropout=dropout,
-            num_repetitions=num_repetitions,
-            **leaf_base_kwargs,
-        )
-        self._pad = pad
-        # Number of input features for the product needs to be extended depending on the padding applied here
+        super().__init__(in_features, num_repetitions=num_repetitions)
 
-        prod_in_features = in_features
-        self.prod = Product(
-            in_features=prod_in_features,
-            cardinality=cardinality,
-            num_repetitions=num_repetitions,
-        )
+        self.base_leaf = base_leaf
+        self.out_features = out_features
 
-        self.cardinality = check_valid(cardinality, int, 1, in_features + 1)
-        self.out_shape = (
-            f"(N, {self.prod._out_features + pad}, {out_channels}, {self.num_repetitions})"
-        )
+        # Size of the factorized groups of RVs
+        cardinality = int(np.round(self.in_features / self.out_features))
 
-    def _init_weights(self):
-        if isinstance(self.base_leaf, RatNormal):
-            truncated_normal_(self.base_leaf.stds, std=0.5)
+        # Construct mapping of scopes from in_features -> out_features
+        scopes = torch.zeros(in_features, self.out_features, num_repetitions)
+        for r in range(num_repetitions):
+            idxs = torch.randperm(n=self.in_features)
+            for o in range(out_features):
+                low = o * cardinality
+                high = (o + 1) * cardinality
+                if o == out_features - 1:
+                    high = self.in_features
+                scopes[idxs[low:high], o, r] = 1
 
-    def forward(self, x: torch.Tensor):
-        # Pass through base leaf
-        x = self.base_leaf(x)
+        self.register_buffer("scopes", scopes)
 
-        if self._pad:
-            # Pad marginalized node
-            x = F.pad(x, pad=[0, 0, 0, 0, 0, self._pad], mode="constant", value=0.0)
+    def forward(self, x: torch.Tensor, marginalized_scopes: List[int]):
+        # Forward through base leaf
+        x = self.base_leaf(x, marginalized_scopes)
 
-        # Pass through product layer
-        x = self.prod(x)
+        # Merge scopes by naive factorization
+        x = torch.einsum("bicr,ior->bocr", x, self.scopes)
         return x
 
-    def _get_base_distribution(self):
-        raise Exception(
-            "IndependentMultivariate does not have an explicit PyTorch base distribution."
-        )
-
     def sample(self, num_samples: int = None, context: SamplingContext = None) -> torch.Tensor:
-        context = self.prod.sample(context=context)
-
-        # Remove padding
-        if self._pad:
-            context.parent_indices = context.parent_indices[:, : -self._pad * self.cardinality]
-
+        # Save original parent_indices and set context parent_indices to none, such that the out_channel
+        # are not filtered in the base_leaf sampling procedure
+        parent_indices = context.parent_indices
+        context.parent_indices = None
         samples = self.base_leaf.sample(context=context)
+
+        # Check that shapes match as expected
+        assert samples.shape == (context.num_samples, self.in_features, self.base_leaf.out_channels)
+
+        # Collect final samples in temporary tensor
+        tmp = torch.zeros(context.num_samples, self.in_features, device=samples.device, dtype=samples.dtype)
+        for sample_idx in range(context.num_samples):
+            # Get correct repetition
+            r = context.repetition_indices[sample_idx]
+
+            # Get correct parent_indices
+            paren_indices_out = parent_indices[sample_idx]
+
+            # Get scope for the current repetition
+            scope = self.scopes[:, :, r]
+
+            # Turn one-hot encoded in-feature -> out-feature mapping into a linear index
+            rnge_in = torch.arange(self.out_features, device=samples.device)
+            scope = (scope * rnge_in).sum(-1).long()
+
+            # Map parent_indices from original "out_features" view to "in_feautres" view
+            paren_indices_in = paren_indices_out[scope]
+
+            # Access base leaf samples based on
+            rnge_out = torch.arange(self.in_features, device=samples.device)
+            tmp[sample_idx] = samples[sample_idx, rnge_out, paren_indices_in]
+
+        samples = tmp
         return samples
 
     def __repr__(self):
-        return f"IndependentMultivariate(in_features={self.in_features}, out_channels={self.out_channels}, dropout={self.dropout}, cardinality={self.cardinality}, out_shape={self.out_shape})"
+        return f"FactorizedLeaf(in_features={self.in_features}, out_features={self.out_features})"
 
 
 def truncated_normal_(tensor, mean=0, std=0.1):
