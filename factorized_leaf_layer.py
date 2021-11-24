@@ -5,6 +5,9 @@ from typing import List
 import torch
 import numpy as np
 from layers import AbstractLayer
+from distributions import Leaf
+
+
 class FactorizedLeaf(AbstractLayer):
     """
     A 'meta'-leaf layer that combines multiple scopes of a base-leaf layer via naive factorization.
@@ -66,7 +69,9 @@ class FactorizedLeaf(AbstractLayer):
         assert samples.shape == (context.num_samples, self.in_features, self.base_leaf.out_channels)
 
         # Collect final samples in temporary tensor
-        tmp = torch.zeros(context.num_samples, self.in_features, device=samples.device, dtype=samples.dtype)
+        tmp = torch.zeros(
+            context.num_samples, self.in_features, device=samples.device, dtype=samples.dtype
+        )
         for sample_idx in range(context.num_samples):
             # Get correct repetition
             r = context.repetition_indices[sample_idx]
