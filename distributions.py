@@ -242,11 +242,13 @@ class Binomial(Leaf):
 
         # Create binomial parameters
         self.probs = nn.Parameter(torch.rand(1, in_features, out_channels, num_repetitions))
+        # Learnable s
+        self.sigmoid_scale = nn.Parameter(torch.tensor(2.0))
 
 
     def _get_base_distribution(self):
         # Use sigmoid to ensure, that probs are in valid range
-        return dist.Binomial(self.total_count, probs=self.probs.sigmoid())
+        return dist.Binomial(self.total_count, probs=torch.sigmoid(self.probs * self.sigmoid_scale))
 
 
 
