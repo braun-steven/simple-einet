@@ -122,8 +122,6 @@ config = EinetConfig(
     C=num_classes,
     leaf_base_class=Binomial,
     leaf_base_kwargs={"total_count": 255},
-    # leaf_base_class=RatNormal,
-    # leaf_base_kwargs={"min_sigma": 1e-3, "max_sigma": 10.0},
     dropout=0.0,
 )
 model = Einet(config).to(device)
@@ -233,7 +231,7 @@ def train(args, model: Einet, device, train_loader, optimizer, epoch):
             # In classification, compute cross entropy
             lls_target = torch.gather(outputs, dim=1, index=target.unsqueeze(-1))
             norm = torch.logsumexp(outputs, -1)
-            loss = -1 * 1 / data.shape[0] * (lls_target - norm).sum()
+            loss = -1 / data.shape[0] * (lls_target - norm).sum()
         else:
             loss = -1 * log_likelihoods(outputs).sum()
 
@@ -344,19 +342,24 @@ else:
     test(model, device, test_loader, "Train")
     test(model, device, test_loader, "Test")
 
+# Don't sample when doing classification
+if args.classification:
+    exit(0)
+
 model.eval()
 
+# Some random samples
 samples = model.sample(
-    num_samples=25,
+    num_samples=64,
     temperature_sums=args.temperature_sums,
     temperature_leaves=args.temperature_leaves,
 )
 samples = samples.view(-1, 1, 28, 28)
 if not has_gauss_dist:
-    grid_kwargs = dict(nrow=5, normalize=False)
+    grid_kwargs = dict(nrow=8, normalize=False)
     samples = samples / 255
 else:
-    grid_kwargs = dict(nrow=5, normalize=True, value_range=(-0.5, 0.5))
+    grid_kwargs = dict(nrow=8, normalize=True, value_range=(-0.5, 0.5))
 
 grid = torchvision.utils.make_grid(samples, **grid_kwargs)
 torchvision.utils.save_image(grid, os.path.join(result_dir, "samples.png"))
@@ -368,7 +371,7 @@ keep_idx = [i for i in range(28 ** 2) if i not in marginalized_scopes]
 
 
 test_x, _ = next(iter(test_loader))
-test_x = test_x[:25].to(device).view(-1, 28 ** 2)
+test_x = test_x[:64].to(device).view(-1, 28 ** 2)
 if has_gauss_dist:
     test_x = preprocess(test_x, n_bits=n_bits, image_shape=(1, 28, 28), device=device, pertubate=False)
 else:
