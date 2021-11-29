@@ -70,13 +70,13 @@ def accuracy(model, X, y):
         acc = correct / total * 100
         return acc
 
+cross_entropy = torch.nn.CrossEntropyLoss()
+
 for epoch in range(args.epochs):
     optimizer.zero_grad()
 
     outputs = model(X_train)
-    lls_target = torch.gather(outputs, dim=1, index=y_train.unsqueeze(-1))
-    norm = torch.logsumexp(outputs, -1)
-    loss = -1 / X_train.shape[0] * (lls_target - norm).sum()
+    loss = cross_entropy(outputs, y_train)
 
     loss.backward()
     optimizer.step()
