@@ -1,6 +1,3 @@
-#!/usr/bin/env python3
-
-
 from typing import Union
 import torch.nn.functional as F
 import numpy as np

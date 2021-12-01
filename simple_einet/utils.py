@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 
