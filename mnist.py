@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 
+import argparse
+import os
 from typing import Tuple
+
 from torch import Tensor
 import numpy as np
 from icecream import ic, install
 
-from clipper import DistributionClipper
-
 install()
-import argparse
-import os
+
 import torch
 from distributions import Binomial, MultivariateNormal, Normal, RatNormal
-from einet import Einet, Einet, EinetConfig
+from simple_einet.einet import Einet, EinetConfig
 from torchvision import datasets, transforms
 import torchvision
 

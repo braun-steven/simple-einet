@@ -1,11 +1,10 @@
-#!/usr/bin/env python3
-
-from utils import SamplingContext
 from typing import List
 import torch
 import numpy as np
-from layers import AbstractLayer
-from distributions import Leaf
+
+from .utils import SamplingContext
+from .layers import AbstractLayer
+from .distributions import Leaf
 
 
 class FactorizedLeaf(AbstractLayer):

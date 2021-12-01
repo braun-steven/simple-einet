@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 import numpy as np
 import torch
 from typing import Any
@@ -15,6 +13,7 @@ class InvalidTypeException(Exception):
         super().__init__(
             f"Value {value} was of type {type(value)} but expected to be of type {expected_type} (or a subclass of this type) ."
         )
+
 
 class InvalidStackedSpnConfigurationException(Exception):
     def __init__(self, expected, observed, parameter_name):
@@ -52,7 +51,8 @@ def _check_type_core(value: Any, expected_type):
         raise InvalidTypeException(value, expected_type)
     elif expected_type == int and not isinstance(value, int):
         raise InvalidTypeException(value, expected_type)
-        
+
+
 def _check_type_numpy(value: Any, expected_type):
     # Check float
     if expected_type == float:
