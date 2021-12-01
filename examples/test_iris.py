@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 
 import argparse
+
 from sklearn import datasets
 from sklearn.model_selection import train_test_split
-from distributions import RatNormal
-from einet import Einet, EinetConfig
 import torch
 
+from simple_einet.distributions import RatNormal
+from simple_einet.einet import Einet, EinetConfig
 
 
 parser = argparse.ArgumentParser(description="PyTorch MNIST Example")
@@ -91,4 +92,3 @@ for epoch in range(args.epochs):
             acc_test,
         )
     )
-

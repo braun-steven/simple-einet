@@ -1,14 +1,12 @@
-#!/usr/bin/env python3
-
-
 from typing import Union
-from utils import SamplingContext
 import torch.nn.functional as F
 import numpy as np
 from torch import nn
 import torch
-from type_checks import check_valid
-from layers import AbstractLayer
+
+from .utils import SamplingContext
+from .type_checks import check_valid
+from .layers import AbstractLayer
 
 
 class EinsumLayer(AbstractLayer):

@@ -8,17 +8,12 @@ import numpy as np
 import torch
 from torch import nn
 
-from clipper import DistributionClipper
-from factorized_leaf_layer import FactorizedLeaf
-from distributions import (
-    Leaf,
-    RatNormal,
-    truncated_normal_,
-)
-from layers import Sum
-from einsum_layer import EinsumLayer
-from type_checks import check_valid
-from utils import SamplingContext, provide_evidence
+from .distributions import Leaf, RatNormal, truncated_normal_
+from .factorized_leaf_layer import FactorizedLeaf
+from .layers import Sum
+from .type_checks import check_valid
+from .utils import SamplingContext, provide_evidence
+from .einsum_layer import EinsumLayer
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +29,7 @@ class EinetConfig:
     I: int  # Number of distributions for each scope at the leaf layer
     R: int  # Number of repetitions
     C: int  # Number of root heads / Number of classes
-    dropout: float  # Dropout probabilities for leafs and sum layers
+    dropout: float  # Dropout probabilities for leaves and sum layers
     leaf_base_class: Type  # Type of the leaf base class (Normal, Bernoulli, etc)
     leaf_base_kwargs: Dict  # Parameters for the leaf base class
     """
@@ -77,7 +72,7 @@ class EinetConfig:
 
         if 2 ** self.D > self.F:
             raise Exception(
-                f"The tree depth D={self.D} must be <= {np.floor(np.log2(self.F))} (log2(in_features)."
+                f"The tree depth D={self.D} must be <= {np.floor(np.log2(self.F))} (log2(in_features))."
             )
 
     def __setattr__(self, key, value):
@@ -278,24 +273,24 @@ class Einet(nn.Module):
 
         Possible valid inputs:
 
-        - `n`: Generates `n` samples.
-        - `n` and `class_index (int)`: Generates `n` samples from P(X | C = class_index).
+        - `num_samples`: Generates `num_samples` samples.
+        - `num_samples` and `class_index (int)`: Generates `num_samples` samples from P(X | C = class_index).
         - `class_index (List[int])`: Generates `len(class_index)` samples. Each index `c_i` in `class_index` is mapped
             to a sample from P(X | C = c_i)
         - `evidence`: If evidence is given, samples conditionally and fill NaN values.
 
         Args:
-            n: Number of samples to generate.
-            class_index: Class index. Can be either an int in combination with a value for `n` which will result in `n`
+            num_samples: Number of samples to generate.
+            class_index: Class index. Can be either an int in combination with a value for `num_samples` which will result in `num_samples`
                 samples from P(X | C = class_index). Or can be a list of ints which will map each index `c_i` in the
                 list to a sample from P(X | C = c_i).
-            evidence: Evidence that can be provided to condition the samples. If evidence is given, `n` and
+            evidence: Evidence that can be provided to condition the samples. If evidence is given, `num_samples` and
                 `class_index` must be `None`. Evidence must contain NaN values which will be imputed according to the
                 distribution represented by the SPN. The result will contain the evidence and replace all NaNs with the
                 sampled values.
             is_mpe: Flag to perform max sampling (MPE).
             temperature_leaves: Variance scaling for leaf distribution samples.
-            temperature_leaves: Variance scaling for sum node categorical sampling.
+            temperature_sums: Variance scaling for sum node categorical sampling.
 
         Returns:
             torch.Tensor: Samples generated according to the distribution specified by the SPN.
@@ -306,7 +301,7 @@ class Einet(nn.Module):
         ), "Cannot provide both, evidence and class indices."
         assert (
             num_samples is None or evidence is None
-        ), "Cannot provide both, number of samples to generate (n) and evidence."
+        ), "Cannot provide both, number of samples to generate (num_samples) and evidence."
 
         # Check if evidence contains nans
         if evidence is not None:
@@ -375,8 +370,6 @@ class Einet(nn.Module):
 
 
 if __name__ == "__main__":
-    from distributions import Normal
-
     torch.manual_seed(0)
 
     # Input dimensions

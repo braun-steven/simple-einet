@@ -1,5 +1,4 @@
 import torch
-import torch.nn.functional as F
 
 LOWER_BOUND = torch.tensor(1e-1)
 DEFAULT_DEVICE = torch.device("cpu")

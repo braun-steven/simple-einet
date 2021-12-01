@@ -1,9 +1,10 @@
 """
 Module that contains a set of distributions with learnable parameters.
 """
+
 import logging
 from abc import abstractmethod
-from typing import Dict, List
+from typing import List
 
 import numpy as np
 import torch
@@ -11,10 +12,9 @@ from torch import distributions as dist
 from torch import nn
 from torch.nn import functional as F
 
-from utils import SamplingContext
-from clipper import DistributionClipper
-from layers import AbstractLayer, Product, Sum
-from type_checks import check_valid
+from .utils import SamplingContext
+from .layers import AbstractLayer, Sum
+from .type_checks import check_valid
 
 logger = logging.getLogger(__name__)
 
@@ -710,7 +710,6 @@ class RatNormal(Leaf):
 
         gauss = dist.Normal(means, torch.sqrt(sigma))
         return gauss
-
 
 
 def truncated_normal_(tensor, mean=0, std=0.1):
