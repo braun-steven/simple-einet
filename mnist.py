@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import torch
 from rich.traceback import install
+
 install(suppress=[torch])
 import argparse
 import os
@@ -218,6 +219,7 @@ def log_likelihoods(outputs, targets=None):
         lls = outputs.gather(-1, targets.unsqueeze(-1))
     return lls
 
+
 def train(args, model: Einet, device, train_loader, optimizer, epoch):
     model.train()
     for batch_idx, (data, target) in enumerate(train_loader):
@@ -289,7 +291,9 @@ def test(model, device, loader, tag):
             data, target = data.to(device), target.to(device)
             data = data.view(-1, 28 ** 2)
             if has_gauss_dist:
-                data = preprocess(data, n_bits, image_shape=(1, 28, 28), device=device, pertubate=True)
+                data = preprocess(
+                    data, n_bits, image_shape=(1, 28, 28), device=device, pertubate=True
+                )
             else:
                 data = (data * 255).long()
             outputs = model(data)
@@ -304,8 +308,9 @@ def test(model, device, loader, tag):
                 test_losses += outputs.squeeze().cpu().tolist()
             else:
                 test_loss += -1 * torch.logsumexp(outputs + np.log(outputs.shape[1]), -1).sum()
-                test_losses += torch.logsumexp(outputs + np.log(outputs.shape[1]), -1).squeeze().cpu().tolist()
-
+                test_losses += (
+                    torch.logsumexp(outputs + np.log(outputs.shape[1]), -1).squeeze().cpu().tolist()
+                )
 
             if args.classification:
                 predictions = outputs.argmax(-1)
@@ -355,7 +360,9 @@ if args.classification:
 
 model.eval()
 
-# Some random samples
+#######################
+# Some random samples #
+#######################
 samples = model.sample(
     num_samples=64,
     temperature_sums=args.temperature_sums,
@@ -372,35 +379,56 @@ grid = torchvision.utils.make_grid(samples, **grid_kwargs)
 torchvision.utils.save_image(grid, os.path.join(result_dir, "samples.png"))
 
 
+#######
+# MPE #
+#######
+mpe = model.mpe(evidence=None)
+mpe = mpe.view(-1, 1, 28, 28)
+if not has_gauss_dist:
+    mpe = mpe / 255
+
+torchvision.utils.save_image(mpe, os.path.join(result_dir, "mpe.png"))
+
+
+
+################
+# ground-truth #
+################
+test_x, _ = next(iter(test_loader))
+test_x = test_x[:64].to(device).view(-1, 28 ** 2)
+if has_gauss_dist:
+    test_x = preprocess(
+        test_x, n_bits=n_bits, image_shape=(1, 28, 28), device=device, pertubate=False
+    )
+else:
+    test_x = test_x * 255
+
+
+grid = torchvision.utils.make_grid(test_x.view(-1, 1, 28, 28) / 255, **grid_kwargs)
+torchvision.utils.save_image(grid, os.path.join(result_dir, "ground_truth.png"))
+
+
+###################
+# reconstructions #
+###################
 image_scope = np.array(range(28 ** 2)).reshape(28, 28)
 marginalized_scopes = list(image_scope[0 : round(28 / 2), :].reshape(-1))
 keep_idx = [i for i in range(28 ** 2) if i not in marginalized_scopes]
 
-
-test_x, _ = next(iter(test_loader))
-test_x = test_x[:64].to(device).view(-1, 28 ** 2)
-if has_gauss_dist:
-    test_x = preprocess(test_x, n_bits=n_bits, image_shape=(1, 28, 28), device=device, pertubate=False)
-else:
-    test_x = (test_x * 255)
-
-
-grid = torchvision.utils.make_grid(
-    test_x.view(-1, 1, 28, 28) / 255, **grid_kwargs
-)
-torchvision.utils.save_image(grid, os.path.join(result_dir, "ground_truth.png"))
-
+num_samples = 1
 reconstructions = None
-
-num_samples = 5
 for k in range(num_samples):
     if reconstructions is None:
         reconstructions = model.sample(
-            evidence=test_x, temperature_leaves=args.temperature_leaves, marginalized_scopes=marginalized_scopes
+            evidence=test_x,
+            temperature_leaves=args.temperature_leaves,
+            marginalized_scopes=marginalized_scopes,
         ).cpu()
     else:
         reconstructions += model.sample(
-            evidence=test_x, temperature_leaves=args.temperature_leaves, marginalized_scopes=marginalized_scopes
+            evidence=test_x,
+            temperature_leaves=args.temperature_leaves,
+            marginalized_scopes=marginalized_scopes,
         ).cpu()
 reconstructions = reconstructions.float() / num_samples
 if not has_gauss_dist:
@@ -410,6 +438,19 @@ reconstructions = reconstructions.squeeze()
 reconstructions = reconstructions.view(-1, 1, 28, 28)
 grid = torchvision.utils.make_grid(reconstructions, **grid_kwargs)
 torchvision.utils.save_image(grid, os.path.join(result_dir, "reconstructions.png"))
+
+
+#######################
+# reconstructions-mpe #
+#######################
+reconstructions_mpe = model.mpe(evidence=test_x, marginalized_scopes=marginalized_scopes).cpu()
+if not has_gauss_dist:
+    reconstructions_mpe = reconstructions_mpe / 255
+reconstructions_mpe = reconstructions_mpe.squeeze()
+
+reconstructions_mpe = reconstructions_mpe.view(-1, 1, 28, 28)
+grid = torchvision.utils.make_grid(reconstructions_mpe, **grid_kwargs)
+torchvision.utils.save_image(grid, os.path.join(result_dir, "reconstructions_mpe.png"))
 
 print(f"Result directory: {result_dir}")
 print("Done.")

@@ -247,7 +247,11 @@ class Einet(nn.Module):
                 truncated_normal_(module.stds, std=0.1)
                 continue
 
-    def mpe(self, evidence: torch.Tensor) -> torch.Tensor:
+    def mpe(
+        self,
+        evidence: torch.Tensor = None,
+        marginalized_scopes: List[int] = None,
+    ) -> torch.Tensor:
         """
         Perform MPE given some evidence.
 
@@ -256,7 +260,7 @@ class Einet(nn.Module):
         Returns:
             torch.Tensor: Clone of input tensor with NaNs replaced by MPE estimates.
         """
-        return self.sample(evidence=evidence, is_mpe=True)
+        return self.sample(evidence=evidence, is_mpe=True, marginalized_scopes=marginalized_scopes)
 
     def sample(
         self,
@@ -307,6 +311,8 @@ class Einet(nn.Module):
         if evidence is not None:
             # Set n to the number of samples in the evidence
             num_samples = evidence.shape[0]
+        elif num_samples is None:
+            num_samples = 1
 
         with provide_evidence(self, evidence, marginalized_scopes):
             # If class is given, use it as base index
