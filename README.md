@@ -80,6 +80,8 @@ print(f"samples.shape={samples.shape}")
 
 ## Citing EinsumNetworks
 
+If you use EinsumNetworks in your publications, please cite the official EinsumNetworks paper.
+
 ```bibtex
 @inproceedings{pmlr-v119-peharz20a,
   title = {Einsum Networks: Fast and Scalable Learning of Tractable Probabilistic Circuits},
@@ -95,5 +97,16 @@ print(f"samples.shape={samples.shape}")
   pdf = {http://proceedings.mlr.press/v119/peharz20a/peharz20a.pdf},
   url = {http://proceedings.mlr.press/v119/peharz20a.html},
   code = {https://github.com/cambridge-mlg/EinsumNetworks},
+}
+```
+
+If you use this software, please cite it as below.
+
+``` bibtex
+@software{lang2021simple-einet,
+author = {Lang, Steven},
+title = {{Simple-einet: An EinsumNetworks Implementation}},
+url = {https://github.com/steven-lang/simple-einet},
+version = {0.0.1},
 }
 ```

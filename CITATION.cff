@@ -5,6 +5,5 @@ authors:
   given-names: "Steven"
   orcid: "https://orcid.org/0000-0002-5627-8058"
 title: "Simple-einet: An EinsumNetworks Implementation"
-version: 2.0.4
-date-released: 2021-12-14
+version: 0.0.1
 url: "https://github.com/steven-lang/simple-einet"
