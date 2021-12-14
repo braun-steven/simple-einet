@@ -76,7 +76,7 @@ class FactorizedLeaf(AbstractLayer):
             r = context.repetition_indices[sample_idx]
 
             # Get correct parent_indices
-            paren_indices_out = parent_indices[sample_idx]
+            parent_indices_out = parent_indices[sample_idx]
 
             # Get scope for the current repetition
             scope = self.scopes[:, :, r]
@@ -86,7 +86,7 @@ class FactorizedLeaf(AbstractLayer):
             scope = (scope * rnge_in).sum(-1).long()
 
             # Map parent_indices from original "out_features" view to "in_feautres" view
-            paren_indices_in = paren_indices_out[scope]
+            paren_indices_in = parent_indices_out[scope]
 
             # Access base leaf samples based on
             rnge_out = torch.arange(self.in_features, device=samples.device)
