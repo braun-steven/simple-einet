@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-
+import torch
+from rich.traceback import install
+install(suppress=[torch])
 import argparse
 import os
 from typing import Tuple
@@ -11,7 +13,7 @@ from icecream import ic, install
 install()
 
 import torch
-from distributions import Binomial, MultivariateNormal, Normal, RatNormal
+from simple_einet.distributions import Binomial, MultivariateNormal, Normal, RatNormal
 from simple_einet.einet import Einet, EinetConfig
 from torchvision import datasets, transforms
 import torchvision
@@ -108,7 +110,8 @@ n_bins = 2 ** n_bits
 
 device = torch.device(args.device)
 # digits = [0, 1, 5, 8]
-digits = list(range(10))
+# digits = list(range(10))
+digits = [0, 1]
 
 # Construct Einet
 num_classes = len(digits) if args.classification else 1
@@ -122,6 +125,10 @@ config = EinetConfig(
     C=num_classes,
     leaf_base_class=Binomial,
     leaf_base_kwargs={"total_count": 255},
+    # leaf_base_class=MultivariateNormal,
+    # leaf_base_kwargs={"cardinality": 2, "min_sigma": 1e-5, "max_sigma": 0.1},
+    # leaf_base_class=RatNormal,
+    # leaf_base_kwargs={"min_sigma": 1e-5, "max_sigma": 1.0},
     dropout=0.0,
 )
 model = Einet(config).to(device)
@@ -375,7 +382,7 @@ test_x = test_x[:64].to(device).view(-1, 28 ** 2)
 if has_gauss_dist:
     test_x = preprocess(test_x, n_bits=n_bits, image_shape=(1, 28, 28), device=device, pertubate=False)
 else:
-    test_x = (test_x * 255).long()
+    test_x = (test_x * 255)
 
 
 grid = torchvision.utils.make_grid(
@@ -403,3 +410,6 @@ reconstructions = reconstructions.squeeze()
 reconstructions = reconstructions.view(-1, 1, 28, 28)
 grid = torchvision.utils.make_grid(reconstructions, **grid_kwargs)
 torchvision.utils.save_image(grid, os.path.join(result_dir, "reconstructions.png"))
+
+print(f"Result directory: {result_dir}")
+print("Done.")
