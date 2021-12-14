@@ -70,9 +70,9 @@ Some samples from the `[0, 1]` class-subset of MNIST [./mnist.py]:
 
 ![MNIST Samples]( ./res/mnist-0-1-samples.png )
 
-**Reconstructions**
+**Reconstructions (conditioned on bottom half)**
 
-![MNIST Reconstructions]( ./res/mnist-0-1-samples.png )
+![MNIST Reconstructions]( ./res/mnist-0-1-rec.png )
 
 ## Citing EinsumNetworks
 
