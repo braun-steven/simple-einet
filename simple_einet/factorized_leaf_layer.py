@@ -65,11 +65,33 @@ class FactorizedLeaf(AbstractLayer):
         samples = self.base_leaf.sample(context=context)
 
         # Check that shapes match as expected
-        assert samples.shape == (context.num_samples, self.in_features, self.base_leaf.out_channels)
+        if samples.dim() == 3:
+            assert samples.shape == (
+                context.num_samples,
+                self.in_features,
+                self.base_leaf.out_channels,
+            )
+        elif samples.dim() == 4:
+            assert self.in_features == samples.shape[1]
+            assert hasattr(self.base_leaf, "cardinality")
+            assert samples.shape == (
+                context.num_samples,
+                self.base_leaf.out_features,
+                self.base_leaf.cardinality,
+                self.base_leaf.out_channels,
+            )
 
         # Collect final samples in temporary tensor
+        if hasattr(self.base_leaf, "cardinality"):
+            cardinality = self.base_leaf.cardinality
+        else:
+            cardinality = 1
         tmp = torch.zeros(
-            context.num_samples, self.in_features, device=samples.device, dtype=samples.dtype
+            context.num_samples,
+            self.in_features,
+            cardinality,
+            device=samples.device,
+            dtype=samples.dtype,
         )
         for sample_idx in range(context.num_samples):
             # Get correct repetition
@@ -86,13 +108,16 @@ class FactorizedLeaf(AbstractLayer):
             scope = (scope * rnge_in).sum(-1).long()
 
             # Map parent_indices from original "out_features" view to "in_feautres" view
-            paren_indices_in = parent_indices_out[scope]
+            parent_indices_in = parent_indices_out[scope]
 
             # Access base leaf samples based on
             rnge_out = torch.arange(self.in_features, device=samples.device)
-            tmp[sample_idx] = samples[sample_idx, rnge_out, paren_indices_in]
 
-        samples = tmp
+            tmp[sample_idx] = samples[sample_idx, rnge_out, ..., parent_indices_in].view(
+                self.in_features, cardinality
+            )
+
+        samples = tmp.view(context.num_samples, -1)
         return samples
 
     def __repr__(self):

@@ -105,9 +105,6 @@ def dist_sample(distribution: dist.Distribution, context: SamplingContext = None
             -1
         )
 
-    if type(distribution) in (dist.Binomial, dist.Bernoulli):
-        samples = samples.long()
-
     return samples
 
 
@@ -121,7 +118,7 @@ class Leaf(AbstractLayer):
     If the input at a specific position is NaN, the variable will be marginalized.
     """
 
-    def __init__(self, in_features: int, out_channels: int, num_repetitions: int = 1, dropout=0.0):
+    def __init__(self, in_features: int, out_channels: int, num_repetitions: int = 1, dropout=0.0, cardinality=1):
         """
         Create the leaf layer.
 
@@ -130,11 +127,13 @@ class Leaf(AbstractLayer):
             out_channels: Number of parallel representations for each input feature.
             num_repetitions: Number of parallel repetitions of this layer.
             dropout: Dropout probability.
+            cardinality: Number of random variables covered by a single leaf.
         """
         super().__init__(in_features=in_features, num_repetitions=num_repetitions)
         self.in_features = check_valid(in_features, int, 1)
         self.out_channels = check_valid(out_channels, int, 1)
         self.num_repetitions = check_valid(num_repetitions, int, 1)
+        self.cardinality = check_valid(cardinality, int, 1)
         dropout = check_valid(dropout, float, 0.0, 1.0)
         self.dropout = nn.Parameter(torch.tensor(dropout), requires_grad=False)
 
@@ -157,7 +156,8 @@ class Leaf(AbstractLayer):
     def _marginalize_input(self, x: torch.Tensor, marginalized_scopes: List[int]) -> torch.Tensor:
         # Marginalize nans set by user
         if marginalized_scopes:
-            x[:, marginalized_scopes] = self.marginalization_constant
+            s = list(set(torch.tensor(marginalized_scopes).div(self.cardinality, rounding_mode="floor").tolist()))
+            x[:, s] = self.marginalization_constant
         return x
 
     def forward(self, x, marginalized_scopes: List[int]):
@@ -233,10 +233,19 @@ class Bernoulli(Leaf):
         probs_ratio = torch.sigmoid(self.probs)
         return dist.Bernoulli(probs=probs_ratio)
 
-class Binomial(Leaf):
 
-    def __init__(self, in_features: int, out_channels: int, total_count: int, num_repetitions: int = 1, dropout=0):
-        super().__init__(in_features, out_channels, num_repetitions=num_repetitions, dropout=dropout)
+class Binomial(Leaf):
+    def __init__(
+        self,
+        in_features: int,
+        out_channels: int,
+        total_count: int,
+        num_repetitions: int = 1,
+        dropout=0,
+    ):
+        super().__init__(
+            in_features, out_channels, num_repetitions=num_repetitions, dropout=dropout
+        )
 
         self.total_count = check_valid(total_count, int, lower_bound=1)
 
@@ -245,11 +254,9 @@ class Binomial(Leaf):
         # Learnable s
         self.sigmoid_scale = nn.Parameter(torch.tensor(2.0))
 
-
     def _get_base_distribution(self):
         # Use sigmoid to ensure, that probs are in valid range
         return dist.Binomial(self.total_count, probs=torch.sigmoid(self.probs * self.sigmoid_scale))
-
 
 
 class MultivariateNormal(Leaf):
@@ -262,8 +269,10 @@ class MultivariateNormal(Leaf):
         cardinality: int,
         num_repetitions: int = 1,
         dropout=0.0,
+        min_sigma: float = 0.1,
+        max_sigma: float = 1.0,
     ):
-        """Creat a gaussian layer.
+        """Creat a multivariate gaussian layer.
 
         Args:
             out_channels: Number of parallel representations for each input feature.
@@ -273,12 +282,13 @@ class MultivariateNormal(Leaf):
 
         """
         # TODO: Fix for num_repetitions
-        super().__init__(in_features, out_channels, num_repetitions, dropout)
-        # self.cardinality = check_valid(cardinality, int, 2, in_features + 1)
-        self.cardinality = cardinality
+        super().__init__(in_features, out_channels, num_repetitions, dropout, cardinality)
         self._pad_value = in_features % cardinality
         self.out_features = np.ceil(in_features / cardinality).astype(int)
         self._n_dists = np.ceil(in_features / cardinality).astype(int)
+
+        self.min_sigma = check_valid(min_sigma, float, 0.0, max_sigma)
+        self.max_sigma = check_valid(max_sigma, float, min_sigma)
 
         # Create gaussian means and covs
         self.means = nn.Parameter(
@@ -296,10 +306,12 @@ class MultivariateNormal(Leaf):
 
         rand = rand + torch.randn_like(rand) * 1e-1
 
-        # Make matrices triangular
-        trils = rand.tril()
+        # Make matrices triangular and remove diagonal entries
+        cov_tril_wo_diag = rand.tril(diagonal=-1)
+        cov_tril_wi_diag = torch.rand(out_channels * self._n_dists * self.num_repetitions, cardinality, cardinality)
 
-        self.triangular = nn.Parameter(trils)
+        self.cov_tril_wo_diag = nn.Parameter(cov_tril_wo_diag)
+        self.cov_tril_wi_diag = nn.Parameter(cov_tril_wi_diag)
         # self._mv = dist.MultivariateNormal(loc=self.means, scale_tril=self.triangular)
         # Reassign means since mv __init__ creates a copy and thus would loose track for autograd
         # self._mv.loc.requires_grad_(True)
@@ -308,23 +320,20 @@ class MultivariateNormal(Leaf):
         self.out_shape = f"(N, {self.out_features}, {self.out_channels})"
 
     def forward(self, x: torch.Tensor, marginalized_scopes: List[int]) -> torch.Tensor:
+        batch_size = x.shape[0]
+
         # Pad dummy variable via reflection
         if self._pad_value != 0:
             x = F.pad(x, pad=[0, 0, 0, self._pad_value], mode="reflect")
 
-        # Make room for out_channels of layer
-        # Output shape: [n, 1, d]
-        batch_size = x.shape[0]
-        # Push repetitions into dim=1
-        x = x.permute(0, 2, 1)  # [n, r, d]
+        # Make room for repetitions: [n, 1, d]
+        x = x.unsqueeze(1)
 
         # Split features into groups
-        x = x.view(
-            batch_size, self.num_repetitions, 1, self._n_dists, self.cardinality
-        )  # [n, r, 1, d/k, k]
+        x = x.view(batch_size, 1, 1, self._n_dists, self.cardinality)  # [n, 1, 1, d/k, k]
 
-        # Repeat groups by number of output_channels
-        x = x.repeat(1, 1, self.out_channels, 1, 1)  #  [n, r, oc, d/k, k]
+        # Repeat groups by number of output_channels and number of repetitions
+        x = x.repeat(1, self.num_repetitions, self.out_channels, 1, 1)  #  [n, r, oc, d/k, k]
 
         # Merge groups and repetitions
         x = x.view(
@@ -341,7 +350,7 @@ class MultivariateNormal(Leaf):
         x = x.permute(0, 3, 2, 1)  # [n, d/k, oc, r]
 
         # Marginalize and apply dropout
-        x = self._marginalize_input(x)
+        x = self._marginalize_input(x, marginalized_scopes)
         x = self._apply_dropout(x)
 
         return x
@@ -378,24 +387,40 @@ class MultivariateNormal(Leaf):
 
         samples = tmp  # [n, oc, d/k, k]
 
-        # If parent index into out_channels are given
-
-        if context.parent_indices is not None:
-            indices = context.parent_indices.unsqueeze(1).unsqueeze(-1).repeat(1, 1, 1, cardinality)
-            # Choose only specific samples for each feature/scope
-            samples = torch.gather(samples, dim=1, index=indices).squeeze(-1)
-
-        samples = samples.squeeze(0)  # Squeeze out_channels dim
         samples = samples.view(
             context.num_samples,
-            self._n_dists * self.cardinality,
+            self.out_channels,
+            self._n_dists,
+            self.cardinality,
         )
+        samples = samples.permute(0, 2, 3, 1)
 
         return samples
 
     def _get_base_distribution(self):
-        triang = self.triangular.sigmoid().tril()
-        mv = dist.MultivariateNormal(loc=self.means, scale_tril=triang)
+
+        if self.min_sigma < self.max_sigma:
+            # scale diag to [min_sigma, max_sigma]
+            cov_diag = self.cov_tril_wi_diag
+            sigma_ratio = torch.sigmoid(cov_diag)
+            cov_diag = self.min_sigma + (self.max_sigma - self.min_sigma) * sigma_ratio
+            cov_diag = cov_diag.tril()
+
+            # scale tril to [-max_sigma, max_sigma]
+            cov_tril = self.cov_tril_wo_diag
+            sigma_ratio = torch.sigmoid(cov_tril)
+            cov_tril = -1 * self.max_sigma + 2 * self.max_sigma * sigma_ratio
+            cov_tril = cov_tril.tril(-1)
+
+        else:
+            cov_tril = self.cov_tril_wo_diag.tril(-1)
+            cov_diag = self.cov_tril_wi_diag.tril().sigmoid()
+
+        scale_tril = cov_tril + cov_diag
+        mv = dist.MultivariateNormal(loc=self.means, scale_tril=scale_tril)
+
+        # ic(cov_diag.mean(0))
+        # ic(cov_tril.mean(0))
         return mv
 
 

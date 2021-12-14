@@ -221,7 +221,7 @@ class Einet(nn.Module):
         )
 
         return FactorizedLeaf(
-            in_features=self.config.F,
+            in_features=base_leaf.out_features,
             out_features=2 ** self.config.D,
             num_repetitions=self.config.R,
             base_leaf=base_leaf,
