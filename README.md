@@ -3,7 +3,11 @@
 This repository contains code for my personal, simplistic, EinsumNetworks implementation.
 
 ## MNIST Samples
-Some samples from the `[0, 1]` class-subset of MNIST [./mnist.py]:
+Some samples from the `[0, 1]` class-subset of MNIST [mnist.py](./mnist.py):
+
+``` sh
+$ python mnist.py --epochs 5 --batch-size 64 --lr 0.5 -K 10 -D 3 -R 10 --device cuda --train
+```
 
 **Samples**
 
