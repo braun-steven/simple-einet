@@ -62,6 +62,11 @@ def _mode(distribution: dist.Distribution, context: SamplingContext = None) -> t
         mode[mode >= 0.5] = 1.0
         mode[mode < 0.5] = 0.0
         return mode.repeat(context.num_samples, 1, 1, 1, 1)
+    elif isinstance(distribution, dist.Binomial):
+        mode = distribution.probs.clone()
+        total_count = distribution.total_count
+        mode = torch.floor(mode * (total_count + 1))
+        return mode.repeat(context.num_samples, 1, 1, 1, 1)
     else:
         raise Exception(f"MPE not yet implemented for type {type(distribution)}")
 
@@ -118,7 +123,14 @@ class Leaf(AbstractLayer):
     If the input at a specific position is NaN, the variable will be marginalized.
     """
 
-    def __init__(self, in_features: int, out_channels: int, num_repetitions: int = 1, dropout=0.0, cardinality=1):
+    def __init__(
+        self,
+        in_features: int,
+        out_channels: int,
+        num_repetitions: int = 1,
+        dropout=0.0,
+        cardinality=1,
+    ):
         """
         Create the leaf layer.
 
@@ -156,7 +168,13 @@ class Leaf(AbstractLayer):
     def _marginalize_input(self, x: torch.Tensor, marginalized_scopes: List[int]) -> torch.Tensor:
         # Marginalize nans set by user
         if marginalized_scopes:
-            s = list(set(torch.tensor(marginalized_scopes).div(self.cardinality, rounding_mode="floor").tolist()))
+            s = list(
+                set(
+                    torch.tensor(marginalized_scopes)
+                    .div(self.cardinality, rounding_mode="floor")
+                    .tolist()
+                )
+            )
             x[:, s] = self.marginalization_constant
         return x
 
@@ -308,7 +326,9 @@ class MultivariateNormal(Leaf):
 
         # Make matrices triangular and remove diagonal entries
         cov_tril_wo_diag = rand.tril(diagonal=-1)
-        cov_tril_wi_diag = torch.rand(out_channels * self._n_dists * self.num_repetitions, cardinality, cardinality)
+        cov_tril_wi_diag = torch.rand(
+            out_channels * self._n_dists * self.num_repetitions, cardinality, cardinality
+        )
 
         self.cov_tril_wo_diag = nn.Parameter(cov_tril_wo_diag)
         self.cov_tril_wi_diag = nn.Parameter(cov_tril_wi_diag)
