@@ -2,6 +2,17 @@
 
 This repository contains code for my personal, simplistic, EinsumNetworks implementation.
 
+## MNIST Samples
+Some samples from the `[0, 1]` class-subset of MNIST [./mnist.py]:
+
+**Samples**
+
+![MNIST Samples]( ./res/mnist-0-1-samples.png )
+
+**Reconstructions (conditioned on bottom half)**
+
+![MNIST Reconstructions]( ./res/mnist-0-1-rec.png )
+
 ## Installation
 
 ```shell
@@ -62,17 +73,6 @@ samples = einet.sample(2)
 print(f"samples={samples}")
 print(f"samples.shape={samples.shape}")
 ```
-
-## MNIST Samples
-Some samples from the `[0, 1]` class-subset of MNIST [./mnist.py]:
-
-**Samples**
-
-![MNIST Samples]( ./res/mnist-0-1-samples.png )
-
-**Reconstructions (conditioned on bottom half)**
-
-![MNIST Reconstructions]( ./res/mnist-0-1-rec.png )
 
 ## Citing EinsumNetworks
 
