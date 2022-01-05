@@ -22,12 +22,12 @@ class InvalidStackedSpnConfigurationException(Exception):
 
 def _check_bounds(value: Any, expected_type, lower_bound=None, upper_bound=None):
     # Check lower bound
-    if lower_bound:
+    if lower_bound is not None:
         if not value >= expected_type(lower_bound):
             raise OutOfBoundsException(value, lower_bound, upper_bound)
 
     # Check upper bound
-    if upper_bound:
+    if upper_bound is not None:
         if not value < expected_type(upper_bound):
             raise OutOfBoundsException(value, lower_bound, upper_bound)
 
