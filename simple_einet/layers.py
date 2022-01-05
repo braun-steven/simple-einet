@@ -1,7 +1,6 @@
 import logging
 from abc import ABC, abstractmethod
-from typing import List, Union
-
+from typing import Sequence, Tuple, Union
 
 import numpy as np
 import torch
@@ -15,10 +14,19 @@ logger = logging.getLogger(__name__)
 
 
 class AbstractLayer(nn.Module, ABC):
-    def __init__(self, in_features: int, num_repetitions: int = 1):
+    def __init__(self, in_shape: Tuple[int, int], num_repetitions: int = 1):
         super().__init__()
-        self.in_features = check_valid(in_features, int, 1)
+
+        # Check that each dimension is valid
+        for n in in_shape:
+            check_valid(n, int, 1)
+            # Save input shape
+        self.in_shape = in_shape
         self.num_repetitions = check_valid(num_repetitions, int, 1)
+
+    @property
+    def num_features(self):
+        return np.prod(self.in_shape)
 
     @abstractmethod
     def sample(
@@ -36,14 +44,37 @@ class AbstractLayer(nn.Module, ABC):
         pass
 
 
+class Dropout(nn.Module):
+    def __init__(self, dropout: float, at_leaf: bool):
+        super().__init__()
+        self.dropout = check_valid(dropout, float, 0.0, 1.0)
+        self._bernoulli_dist = torch.distributions.Bernoulli(probs=self.dropout)
+        self.at_leaf = at_leaf
+        if at_leaf:
+            self.dropout_value = 0.0
+        else:
+            self.dropout_value = np.NINF
+
+    def forward(self, x):
+        # Apply dropout: Set random sum node children to 0 (-inf in log domain)
+        if self.training:
+            N, D, IC, R = x.size()
+            dropindices_out = self._bernoulli_dist.sample(x.shape).bool()
+            # Check for sum nodes which have been fully dropped out and mitigate
+            all_dropped = (dropindices_out.sum(2) == IC).unsqueeze(2).repeat(1, 1, IC, 1)
+            dropindices_out[all_dropped] = False
+            mask = torch.zeros_like(x)
+            mask[dropindices_out] = self.dropout_value
+            x = x + mask
+
+
 class Sum(AbstractLayer):
     def __init__(
         self,
-        in_channels: int,
-        in_features: int,
-        out_channels: int,
+        in_shape: Tuple[int, int],
+        num_sums_in: int,
+        num_sums_out: int,
         num_repetitions: int = 1,
-        dropout: float = 0.0,
     ):
         """
         Create a Sum layer.
@@ -56,24 +87,23 @@ class Sum(AbstractLayer):
             in_features (int): Number of input features.
             out_channels (int): Multiplicity of a sum node for a given scope set.
             num_repetitions(int): Number of layer repetitions in parallel.
-            dropout (float, optional): Dropout percentage.
         """
-        super().__init__(in_features, num_repetitions)
+        super().__init__(in_shape, num_repetitions)
 
-        self.in_channels = check_valid(in_channels, int, 1)
-        self.out_channels = check_valid(out_channels, int, 1)
-        self.dropout = nn.Parameter(
-            torch.tensor(check_valid(dropout, float, 0.0, 1.0)), requires_grad=False
-        )
+        self.num_sums_in = check_valid(num_sums_in, int, 1)
+        self.num_sums_out = check_valid(num_sums_out, int, 1)
 
         # Weights, such that each sumnode has its own weights
         ws = torch.randn(
-            self.in_features, self.in_channels, self.out_channels, self.num_repetitions
+            self.in_shape[0],
+            self.in_shape[1],
+            self.num_sums_in,
+            self.num_sums_out,
+            self.num_repetitions,
         )
         self.weights = nn.Parameter(ws)
-        self._bernoulli_dist = torch.distributions.Bernoulli(probs=self.dropout)
 
-        self.out_shape = f"(N, {self.in_features}, {self.out_channels}, {self.num_repetitions})"
+        self.out_shape = self.in_shape
 
         # Necessary for sampling with evidence: Save input during forward pass.
         self._is_input_cache_enabled = False
@@ -107,29 +137,24 @@ class Sum(AbstractLayer):
         if self._is_input_cache_enabled:
             self._input_cache = x.clone()
 
-        # Apply dropout: Set random sum node children to 0 (-inf in log domain)
-        if self.dropout > 0.0 and self.training:
-            dropout_indices = self._bernoulli_dist.sample(x.shape).bool()
-            x[dropout_indices] = np.NINF
-
         # Dimensions
-        n, d, ic, r = x.size()
-        oc = self.weights.size(2)
+        N, H, W, IC, R = x.size()
+        oc = self.weights.size(3)
 
-        x = x.unsqueeze(3)  # Shape: [n, d, ic, 1, r]
+        x = x.unsqueeze(4)  # Shape: [n, w, h, ic, 1, r]
 
         # Normalize weights in log-space along in_channel dimension
-        # Weights is of shape [d, ic, oc, r]
-        logweights = F.log_softmax(self.weights, dim=1)
+        # Weights is of shape [w, h, ic, oc, r]
+        logweights = F.log_softmax(self.weights, dim=2)
 
         # Multiply (add in log-space) input features and weights
-        x = x + logweights  # Shape: [n, d, ic, oc, r]
+        x = x + logweights  # Shape: [n, w, h, ic, oc, r]
 
         # Compute sum via logsumexp along in_channels dimension
-        x = torch.logsumexp(x, dim=2)  # Shape: [n, d, oc, r]
+        x = torch.logsumexp(x, dim=3)  # Shape: [n, w, h, oc, r]
 
         # Assert correct dimensions
-        assert x.size() == (n, d, oc, r)
+        assert x.size() == (N, W, H, oc, R)
 
         return x
 
@@ -139,7 +164,7 @@ class Sum(AbstractLayer):
         Output is always a vector of indices into the channels.
 
         Args:
-            repetition_indices (List[int]): An index into the repetition axis for each sample.
+            indices_repetition (List[int]): An index into the repetition axis for each sample.
                 Can be None if `num_repetitions==1`.
             indices (torch.Tensor): Parent sampling output.
             n (int): Number of samples.
@@ -151,77 +176,87 @@ class Sum(AbstractLayer):
         # We now want to use `indices` to access one in_channel for each in_feature x out_channels block
         # index is of size in_feature
         weights = self.weights.data
-        in_features, in_channels, out_channels, num_repetitions = weights.shape
+        height, width, in_channels, out_channels, num_repetitions = weights.shape
         num_samples = context.num_samples
 
         # Create sampling context if this is a root layer
         if context.is_root:
-            assert out_channels == 1 and num_repetitions == 1, "Cannot start sampling from non-root layer."
+            assert (
+                out_channels == 1 and num_repetitions == 1
+            ), "Cannot start sampling from non-root layer."
 
             # Initialize rep indices
-            context.repetition_indices = torch.zeros(num_samples, dtype=int, device=self.__device)
+            context.indices_repetition = torch.zeros(num_samples, dtype=int, device=self.__device)
 
             # Select weights, repeat n times along the last dimension
-            weights = weights[:, :, [0] * num_samples, 0]  # Shape: [D, IC, N]
+            weights = weights[:, :, :, [0] * num_samples, 0]  # Shape: [W, H, IC, N]
 
-            # Move sample dimension to the first axis: [feat, channels, batch] -> [batch, feat, channels]
-            weights = weights.permute(2, 0, 1)  # Shape: [N, D, IC]
+            # Move sample dimension to the first axis: [W, H, IC, N] -> [N, W, H, IC]
+            weights = weights.permute(3, 0, 1, 2)  # Shape: [N, W, H, IC]
         else:
             # If this is not the root node, use the paths (out channels), specified by the parent layer
-            self._check_repetition_indices(context)
+            self._check_indices_repetition(context)
 
-            tmp = torch.zeros(num_samples, in_features, in_channels, device=self.__device)
+            tmp = torch.zeros(num_samples, height, width, in_channels, device=self.__device)
             for i in range(num_samples):
-                tmp[i, :, :] = weights[
-                    range(self.in_features),
+                # tmp[i, :, :] = weights[
+                #     range(self.in_features),
+                #     :,
+                #     context.indices_out[i],
+                #     context.indices_repetition[i],
+                # ]
+                tmp[i, :, :, :] = weights[
+                    range(width),
+                    range(height),
                     :,
-                    context.parent_indices[i],
-                    context.repetition_indices[i],
+                    context.indices_out[i],
+                    context.indices_repetition[i],
                 ]
             weights = tmp
 
         # Check dimensions
-        assert weights.shape == (num_samples, in_features, in_channels)
+        assert weights.shape == (num_samples, height, width, in_channels)
 
         # Apply softmax to ensure they are proper probabilities
-        log_weights = F.log_softmax(weights / context.temperature_sums, dim=2)
+        log_weights = F.log_softmax(weights / context.temperature_sums, dim=3)
 
         # If evidence is given, adjust the weights with the likelihoods of the observed paths
         if self._is_input_cache_enabled and self._input_cache is not None:
             for i in range(num_samples):
                 # Reweight the i-th samples weights by its likelihood values at the correct repetition
-                log_weights[i, :, :] += self._input_cache[i, :, :, context.repetition_indices[i]]
+                log_weights[i, :, :, :] += self._input_cache[
+                    i, :, :, :, context.indices_repetition[i]
+                ]
 
         # If sampling context is MPE, set max weight to 1 and rest to zero, such that the maximum index will be sampled
         if context.is_mpe:
             # Get index of largest weight along in-channel dimension
-            indices = log_weights.argmax(dim=2)
+            indices = log_weights.argmax(dim=3)
         else:
             dist = torch.distributions.Categorical(logits=log_weights)
             indices = dist.sample()
 
         # Update parent indices
-        context.parent_indices = indices
+        context.indices_out = indices
 
         return context
 
-    def _check_repetition_indices(self, context: SamplingContext):
-        assert context.repetition_indices.shape[0] == context.parent_indices.shape[0]
-        if self.num_repetitions > 1 and context.repetition_indices is None:
+    def _check_indices_repetition(self, context: SamplingContext):
+        assert context.indices_repetition.shape[0] == context.indices_out.shape[0]
+        if self.num_repetitions > 1 and context.indices_repetition is None:
             raise Exception(
-                f"Sum layer has multiple repetitions (num_repetitions=={self.num_repetitions}) but repetition_indices argument was None, expected a Long tensor size #samples."
+                f"Sum layer has multiple repetitions (num_repetitions=={self.num_repetitions}) but indices_repetition argument was None, expected a Long tensor size #samples."
             )
-        if self.num_repetitions == 1 and context.repetition_indices is None:
-            context.repetition_indices = torch.zeros(
+        if self.num_repetitions == 1 and context.indices_repetition is None:
+            context.indices_repetition = torch.zeros(
                 context.num_samples, dtype=int, device=self.__device
             )
 
     def __repr__(self):
-        return "Sum(in_channels={}, in_features={}, out_channels={}, dropout={}, out_shape={})".format(
-            self.in_channels,
-            self.in_features,
-            self.out_channels,
-            self.dropout,
+        return "Sum(in_shape={}, num_sums_in={}, num_sums_out={}, out_shape={})".format(
+            self.in_shape,
+            self.num_sums_in,
+            self.num_sums_out,
             self.out_shape,
         )
 
@@ -308,10 +343,10 @@ class Product(AbstractLayer):
 
             if self.num_repetitions == 1:
                 # If there is only a single repetition, create new sampling context
-                context.parent_indices = torch.zeros(
+                context.indices_out = torch.zeros(
                     context.num_samples, 1, dtype=int, device=self.__device
                 )
-                context.repetition_indices = torch.zeros(
+                context.indices_repetition = torch.zeros(
                     context.num_samples, dtype=int, device=self.__device
                 )
                 return context
@@ -322,14 +357,14 @@ class Product(AbstractLayer):
         else:
             # Repeat the parent indices, e.g. [0, 2, 3] -> [0, 0, 2, 2, 3, 3] depending on the cardinality
             indices = torch.repeat_interleave(
-                context.parent_indices, repeats=self.cardinality, dim=1
+                context.indices_out, repeats=self.cardinality, dim=1
             )
 
             # Remove padding
             if self._pad:
                 indices = indices[:, : -self._pad]
 
-            context.parent_indices = indices
+            context.indices_out = indices
             return context
 
     def __repr__(self):
@@ -457,10 +492,10 @@ class CrossProduct(AbstractLayer):
         if context.is_root:
             if self.num_repetitions == 1:
                 # If there is only a single repetition, create new sampling context
-                context.parent_indices = torch.zeros(
+                context.indices_out = torch.zeros(
                     context.num_samples, 1, dtype=int, device=self.__device
                 )
-                context.repetition_indices = torch.zeros(
+                context.indices_repetition = torch.zeros(
                     context.num_samples, dtype=int, device=self.__device
                 )
                 return context
@@ -470,17 +505,15 @@ class CrossProduct(AbstractLayer):
                 )
 
         # Map flattened indexes back to coordinates to obtain the chosen input_channel for each feature
-        indices = self.unraveled_channel_indices[context.parent_indices]
+        indices = self.unraveled_channel_indices[context.indices_out]
         indices = indices.view(indices.shape[0], -1)
 
         # Remove padding
         if self._pad:
             indices = indices[:, : -self._pad]
 
-        context.parent_indices = indices
+        context.indices_out = indices
         return context
 
     def __repr__(self):
         return "CrossProduct(in_features={}, out_shape={})".format(self.in_features, self.out_shape)
-
-
