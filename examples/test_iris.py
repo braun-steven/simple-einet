@@ -4,7 +4,6 @@ import argparse
 
 from sklearn import datasets
 from sklearn.model_selection import train_test_split
-
 import torch
 
 from simple_einet.distributions import RatNormal
@@ -50,10 +49,9 @@ args = parser.parse_args()
 device = torch.device(args.device)
 torch.manual_seed(args.seed)
 
-config = EinetConfig(num_features=4, depth=args.D, num_sums=args.K, num_leaves=args.K, num_repetitions=args.R, num_classes=3, leaf_type=RatNormal, leaf_kwargs={}, dropout=0.0)
+config = EinetConfig(in_features=4, D=args.D, S=args.K, I=args.K, R=args.R, C=3, leaf_base_class=RatNormal, leaf_base_kwargs={}, dropout=0.0)
 model = Einet(config).to(device)
 print("Number of parameters:", sum(p.numel() for p in model.parameters() if p.requires_grad))
-print(model)
 
 optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
