@@ -1,12 +1,13 @@
-from typing import Sequence, Tuple, Union
-import torch.nn.functional as F
-import numpy as np
-from torch import nn
-import torch
+from typing import Tuple, Union
 
-from .utils import SamplingContext
-from .type_checks import check_valid
+import numpy as np
+import torch
+import torch.nn.functional as F
+from torch import nn
+
 from .layers import AbstractLayer
+from .type_checks import check_valid
+from .utils import SamplingContext, invert_permutation
 
 
 class EinsumLayer(AbstractLayer):
@@ -33,13 +34,24 @@ class EinsumLayer(AbstractLayer):
 
         # Compute correct output dimensions for width/height
         if split_dim == "h":
-            out_height = self.in_shape[0]  // self.cardinality
+            out_height = self.in_shape[0] // self.cardinality
             out_width = self.in_shape[1]
         else:
             out_height = self.in_shape[0]
             out_width = self.in_shape[1] // self.cardinality
 
         self.out_shape = [out_height, out_width]
+
+        # Construct left/right partition indices
+        if split_dim == "h":
+            indices = torch.arange(self.in_shape[0])
+        else:
+            indices = torch.arange(self.in_shape[1])
+
+        self.left_idx = indices[0::2]
+        self.right_idx = indices[1::2]
+
+        self.inverse_idx = invert_permutation(torch.cat((self.left_idx, self.right_idx)))
 
         # Weights, such that each sumnode has its own weights
         weights = torch.randn(
@@ -90,14 +102,20 @@ class EinsumLayer(AbstractLayer):
         assert self.num_features == H * W
 
         # left/right shape: [n, h/2, w, c, r] or [n, h, w/2, c, r]
+        # if self.split_dim == "h":
+        #     split_val = self.out_shape[0]
+        #     left = x[:, split_val:]
+        #     right = x[:, :split_val]
+        # else:
+        #     split_val = self.out_shape[1]
+        #     left = x[:, :, split_val:]
+        #     right = x[:, :, :split_val]
         if self.split_dim == "h":
-            split_val = self.out_shape[0]
-            left = x[:, split_val:]
-            right = x[:, :split_val]
+            left = x[:, self.left_idx]
+            right = x[:, self.right_idx]
         else:
-            split_val = self.out_shape[1]
-            left = x[:, :, split_val:]
-            right = x[:, :, :split_val]
+            left = x[:, :, self.left_idx]
+            right = x[:, :, self.right_idx]
 
         left_max = torch.max(left, dim=3, keepdim=True)[0]
         left_prob = torch.exp(left - left_max)
@@ -156,7 +174,6 @@ class EinsumLayer(AbstractLayer):
         weights = weights.gather(dim=-1, index=r_idxs)
         weights = weights.squeeze(-1)
 
-
         # Index with parent indices
         p_idxs = context.indices_out.view(-1, height, width, 1, 1, 1)
         p_idxs = p_idxs.expand(-1, -1, -1, num_sums_in, num_sums_in, -1)
@@ -210,13 +227,21 @@ class EinsumLayer(AbstractLayer):
         #  [[0, 1]
         #   [1, 0]]
         #
+
+        # Map indices from product output tensor to partition tensors (last dim is now of size 2)
         indices = self.unraveled_channel_indices[indices]
         if self.split_dim == "h":
+            # Move partition dimension after the dimension at which we have split
             indices = indices.permute(0, 1, 3, 2)
+            # Interleave tensors
             indices = indices.reshape(num_samples, 2 * height, width)
         else:
-            indices = indices.permute(0, 3, 2, 1)
+            indices = indices.permute(0, 1, 2, 3)
+            # Interleave tensors
             indices = indices.reshape(num_samples, height, 2 * width)
+
+
+        assert list(indices.shape[-2:]) == self.in_shape
 
         context.indices_out = indices
         return context
@@ -243,8 +268,8 @@ class EinsumLayer(AbstractLayer):
         self._input_cache_right = None
 
     def __repr__(self):
-        return "EinsumLayer(in_shape={}, out_shape={}, num_sums_in={}, num_sums_out={}, num_repetitions={})".format(
-            self.in_shape, self.out_shape, self.num_sums_in, self.num_sums_out, self.num_repetitions
+        return "EinsumLayer(in_shape={}, out_shape={}, num_sums_in={}, num_sums_out={}, num_repetitions={}, split={})".format(
+            self.in_shape, self.out_shape, self.num_sums_in, self.num_sums_out, self.num_repetitions, self.split_dim
         )
 
 

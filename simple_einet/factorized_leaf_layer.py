@@ -94,6 +94,7 @@ class FactorizedLeaf(AbstractLayer):
     def sample(self, num_samples: int = None, context: SamplingContext = None) -> torch.Tensor:
         # Save original indices_out and set context indices_out to none, such that the out_channel
         # are not filtered in the base_leaf sampling procedure
+        __import__("pdb").set_trace()
         indices_out = context.indices_out
         context.indices_out = None
         samples = self.base_leaf.sample(context=context)
@@ -138,38 +139,49 @@ class FactorizedLeaf(AbstractLayer):
             # Interpretation: For each scope i,j in indices_out, the element (index) at position i,j
             # is the index into the leaf sample output channel (0, ..., num_leaves - 1)
             indices_out_i = indices_out[sample_idx]
-            assert list(indices_out_i.shape) == self.out_shape
+            # assert list(indices_out_i.shape) == self.out_shape
 
-            # Get scope for the current repetition
-            upsize = self.scopes_w.shape[0] // self.scopes_w.shape[1]
-            upsample = nn.ConvTranspose2d(1, 1, upsize, stride=upsize)
-            upsample.weight[:] = 1.0
-            up = upsample(indices_out_i.view(1, 1, *indices_out_i.shape).float())
-            up = up.round().long()[0, 0]
-            scope_h = self.scopes_h[:, :, rep]  # Which height scopes get merged
-            scope_w = self.scopes_w[:, :, rep]  # Which width scopes get merged
+            # # Get scope for the current repetition
+            # # upsize = self.scopes_w.shape[0] // self.scopes_w.shape[1]
+            # # upsample = nn.ConvTranspose2d(1, 1, upsize, stride=upsize)
+            # # upsample.weight[:] = 1.0
+            # # up = upsample(indices_out_i.view(1, 1, *indices_out_i.shape).float())
+            # # up = up.round().long()[0, 0]
+            # scope_h = self.scopes_h[:, :, rep]  # Which height scopes get merged
+            # scope_w = self.scopes_w[:, :, rep]  # Which width scopes get merged
 
-            # Turn one-hot encoded in-feature -> out-feature mapping into a linear index
-            rnge_in_h = torch.arange(self.out_shape[0], device=samples.device)
-            rnge_in_w = torch.arange(self.out_shape[1], device=samples.device)
+            # # Turn one-hot encoded in-feature -> out-feature mapping into a linear index
+            # rnge_in_h = torch.arange(self.out_shape[0], device=samples.device)
+            # rnge_in_w = torch.arange(self.out_shape[1], device=samples.device)
 
-            # Mapping from in-scope to out-scope
-            # Read: element i in the following list is an index j, where
-            # i is an index into the in_shape and j is the corresponding index into the out_shape
-            scope_h = (scope_h * rnge_in_h).sum(-1).long()
-            scope_w = (scope_w * rnge_in_w).sum(-1).long()
-            assert scope_h.shape[0] == self.in_shape[0]
-            assert scope_w.shape[0] == self.in_shape[1]
+            # # Mapping from in-scope to out-scope
+            # # Read: element i in the following list is an index j, where
+            # # i is an index into the in_shape and j is the corresponding index into the out_shape
+            # scope_h = (scope_h * rnge_in_h).sum(-1).long()
+            # scope_w = (scope_w * rnge_in_w).sum(-1).long()
+            # assert scope_h.shape[0] == self.in_shape[0]
+            # assert scope_w.shape[0] == self.in_shape[1]
 
+            # ic(indices_out_i.shape)
+            # ic(scope_h.shape)
+            # ic(scope_w.shape)
 
-            # # Map indices_out from original "out_shape" view to "in_shape" view
-            scope_h = scope_h.view(-1, 1).expand(-1, indices_out_i.shape[0])
-            scope_w = scope_w.view(1, -1).expand(self.in_shape[1], -1)
-            indices_in = indices_out_i.gather(dim=0, index=scope_h)
-            indices_in = indices_in.gather(dim=1, index=scope_w)
+            # # # Map indices_out from original "out_shape" view to "in_shape" view
+            # scope_h = scope_h.view(-1, 1).expand(-1, indices_out_i.shape[0])
+            # scope_w = scope_w.view(1, -1).expand(self.in_shape[1], -1)
+            # indices_in = indices_out_i.gather(dim=0, index=scope_h)
+            # indices_in = indices_in.gather(dim=1, index=scope_w)
+
+            # Note: the following is simpler but only works for the input dimension is a power of 2
+            repeat_h = self.scopes_h.shape[0] // self.scopes_h.shape[1]
+            repeat_w = self.scopes_w.shape[0] // self.scopes_w.shape[1]
+            indices_in = indices_out_i.repeat_interleave(repeat_h, dim=0).repeat_interleave(repeat_w, dim=1)
+
+            # assert (indices_in == indices_in_2).all()
+
             # assert (indices_in == up).all()
-            indices_in.fill_(sample_idx % samples.shape[-1])
-            warnings.warn("Sampling indices fixed in factorizedleaf")
+            # indices_in.fill_(sample_idx % samples.shape[-1])
+            # warnings.warn("Sampling indices fixed in factorizedleaf")
 
 
             # TODO: This is not yet working - something is off with the indexing
