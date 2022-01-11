@@ -4,7 +4,7 @@ Module that contains a set of distributions with learnable parameters.
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Iterable, List, Tuple, Any
+from typing import Iterable, List, Tuple, Any, Dict
 
 import numpy as np
 import torch
@@ -279,7 +279,7 @@ class Binomial(AbstractLeaf):
 class MultiDistributionLayer(AbstractLeaf):
     def __init__(
         self,
-        scopes_to_dist: List[Tuple[Iterable[int], AbstractLeaf, dict[str, Any]]],
+        scopes_to_dist: List[Tuple[Iterable[int], AbstractLeaf, Dict[str, Any]]],
         num_features: int,
         num_channels: int,
         num_leaves: int,
