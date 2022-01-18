@@ -170,7 +170,7 @@ class AbstractLeaf(AbstractLayer, ABC):
         if marginalized_scopes is not None:
             if type(marginalized_scopes) != torch.Tensor:
                 marginalized_scopes = torch.tensor(marginalized_scopes)
-            s = torch.tensor(marginalized_scopes).div(self.cardinality, rounding_mode="floor")
+            s = marginalized_scopes.div(self.cardinality, rounding_mode="floor")
             s = list(set(s.tolist()))
             x[:, :, s] = self.marginalization_constant
         return x
