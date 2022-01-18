@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 from collections import defaultdict
 import logging
 from dataclasses import dataclass
@@ -181,19 +179,8 @@ class Einet(nn.Module):
         for i in np.arange(start=1, stop=self.config.depth + 1):
 
             _num_sums_in = self.config.num_sums if i < self.config.depth else self.config.num_leaves
-            # _num_sums_out = self.config.num_sums if i > 1 else self.config.num_classes
             _num_sums_out = self.config.num_sums if i > 1 else self.config.num_classes
             in_features = 2 ** i
-
-            # for i in range(2):
-            #     sum_layer_overparam = Sum(
-            #         num_features=in_features,
-            #         num_sums_in=_num_sums_in,
-            #         num_sums_out=_num_sums_in,
-            #         num_repetitions=self.config.num_repetitions,
-            #     )
-
-            #     einsum_layers.append(sum_layer_overparam)
 
             layer = EinsumLayer(
                 num_features=in_features,
