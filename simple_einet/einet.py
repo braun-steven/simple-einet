@@ -138,8 +138,13 @@ class Einet(nn.Module):
         assert features == 1  # number of features should be 1 at this point
         assert channels == self.config.num_classes
 
-        # Apply C sum node outputs
-        x = self.root(x)
+        # If model has multiple reptitions, perform repetition mixing
+        if self.config.num_repetitions > 1:
+            # Mix repetitions
+            x = self.mixing(x)
+        else:
+            # Remove repetition index
+            x = x.squeeze(-1)
 
         # Remove feature dimension
         x = x.squeeze(1)
@@ -197,12 +202,13 @@ class Einet(nn.Module):
         # List layers in a bottom-to-top fashion
         self.einsum_layers: Sequence[EinsumLayer] = nn.ModuleList(reversed(einsum_layers))
 
-        # Construct root layer which mixes the repetitions
-        self.root = EinsumMixingLayer(
-            num_features=1,
-            num_sums_in=self.config.num_repetitions,
-            num_sums_out=self.config.num_classes,
-        )
+        # If model has multiple reptitions, add repetition mixing layer
+        if self.config.num_repetitions > 1:
+            self.mixing = EinsumMixingLayer(
+                num_features=1,
+                num_sums_in=self.config.num_repetitions,
+                num_sums_out=self.config.num_classes,
+            )
 
         # Construct sampling root with weights according to priors for sampling
         self._sampling_root = Sum(
@@ -354,14 +360,15 @@ class Einet(nn.Module):
                 ctx = self._sampling_root.sample(context=ctx)
 
             # Save parent indices that were sampled from the sampling root
-            indices_out_pre_root = ctx.indices_out
+            if self.config.num_repetitions > 1:
+                indices_out_pre_root = ctx.indices_out
 
-            ctx.indices_repetition = torch.zeros(num_samples, dtype=int, device=self.__device)
-            ctx = self.root.sample(context=ctx)
+                ctx.indices_repetition = torch.zeros(num_samples, dtype=int, device=self.__device)
+                ctx = self.mixing.sample(context=ctx)
 
-            # Obtain repetition indices
-            ctx.indices_repetition = ctx.indices_out.view(num_samples)
-            ctx.indices_out = indices_out_pre_root
+                # Obtain repetition indices
+                ctx.indices_repetition = ctx.indices_out.view(num_samples)
+                ctx.indices_out = indices_out_pre_root
 
             # Sample inner layers in reverse order (starting from topmost)
             for layer in reversed(self.einsum_layers):
