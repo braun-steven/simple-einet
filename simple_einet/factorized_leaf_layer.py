@@ -88,60 +88,10 @@ class FactorizedLeaf(AbstractLayer):
                 self.base_leaf.num_leaves,
             )
 
-        # indices_in_tmp = torch.zeros(num_samples, self.num_features, device=samples.device)
-
-        # # Collect final samples in temporary tensor
-        # if hasattr(self.base_leaf, "cardinality"):
-        #     cardinality = self.base_leaf.cardinality
-        # else:
-        #     cardinality = 1
-        # tmp = torch.zeros(
-        #     context.num_samples,
-        #     self.base_leaf.num_channels,
-        #     self.num_features,
-        #     cardinality,
-        #     device=samples.device,
-        #     dtype=samples.dtype,
-        # )
-        # for sample_idx in range(context.num_samples):
-        #     # Get correct repetition
-        #     r = context.indices_repetition[sample_idx]
-
-        #     # Get correct indices_out
-        #     indices_out_out = indices_out[sample_idx]
-
-        #     # Get scope for the current repetition
-        #     scope = self.scopes[:, :, r]
-
-        #     # Turn one-hot encoded in-feature -> out-feature mapping into a linear index
-        #     rnge_in = torch.arange(self.num_features_out, device=samples.device)
-        #     scope = (scope * rnge_in).sum(-1).long()
-
-        #     # Map indices_out from original "out_features" view to "in_feautres" view
-        #     indices_out_in = indices_out_out[scope]
-        #     indices_in_tmp[sample_idx] = indices_out_in
-
-        #     # TODO: Alternative with gather which probably works over all samples
-        #     # scope_h = scope_h.view(-1, 1).expand(-1, indices_out_i.shape[0])
-        #     # scope_w = scope_w.view(1, -1).expand(self.in_shape[1], -1)
-        #     # indices_in = indices_out_i.gather(dim=0, index=scope_h)
-
-        #     # Access base leaf samples based on
-        #     rnge_out = torch.arange(self.num_features, device=samples.device)
-
-        #     sample_i = samples[sample_idx, :, rnge_out, ..., indices_out_in].view(
-        #         self.num_features, cardinality
-        #     )
-        #     tmp[sample_idx] = sample_i
-        # samples = tmp.view(context.num_samples, -1)
-
         scopes = self.scopes[..., context.indices_repetition].permute(2, 0, 1)
         rnge_in = torch.arange(self.num_features_out, device=samples.device)
         scopes = (scopes * rnge_in).sum(-1).long()
         indices_in_gather = indices_out.gather(dim=1, index=scopes)
-
-        # assert (indices_in_tmp == indices_in_gather).all()
-
         indices_in_gather = indices_in_gather.view(num_samples, 1, -1, 1).expand(-1, samples.shape[1], -1, -1)
         samples = samples.gather(dim=-1, index=indices_in_gather)
         samples.squeeze_(-1)  # Remove num_leaves dimension
