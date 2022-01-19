@@ -30,15 +30,16 @@ class EinsumLayer(AbstractLayer):
         # Weights, such that each sumnode has its own weights
         ws = torch.randn(
             self.num_features // cardinality,
-            self.num_sums_in,
-            self.num_sums_in,
             self.num_sums_out,
             self.num_repetitions,
+            self.num_sums_in,
+            self.num_sums_in,
         )
+
         self.weights = nn.Parameter(ws)
 
         # Collect scopes for each product child
-        self._scopes = [[] for _ in range(self.cardinality)]
+        self.scopes = [[] for _ in range(self.cardinality)]
 
         # Create sequence of scopes
         scopes = np.arange(self.num_features)
@@ -47,15 +48,15 @@ class EinsumLayer(AbstractLayer):
         for i in range(0, self.num_features, self.cardinality):
             for j in range(cardinality):
                 if i + j < num_features:
-                    self._scopes[j].append(scopes[i + j])
+                    self.scopes[j].append(scopes[i + j])
                 else:
                     # Case: d mod cardinality != 0 => Create marginalized nodes with prob 1.0
                     # Pad x in forward pass on the right: [n, d, c] -> [n, d+1, c] where index
                     # d+1 is the marginalized node (index "in_features")
-                    self._scopes[j].append(self.num_features)
+                    self.scopes[j].append(self.num_features)
 
         # Transform into numpy array for easier indexing
-        self._scopes = np.array(self._scopes)
+        self.scopes = np.array(self.scopes)
 
         # Create index map from flattened to coordinates (only needed in sampling)
         self.unraveled_channel_indices = nn.Parameter(
@@ -92,40 +93,30 @@ class EinsumLayer(AbstractLayer):
             dropout_indices = self._bernoulli_dist.sample(x.shape).bool()
             x[dropout_indices] = np.NINF
 
-        # # Check if padding to next power of 2 is necessary
-        # if self.num_features != x.shape[1]:
-        #     # Compute necessary padding to the next power of 2
-        #     self._pad = 2 ** np.ceil(np.log2(x.shape[1])).astype(np.int) - x.shape[1]
-
-        #     # Pad marginalized node
-        #     x = F.pad(x, pad=[0, 0, 0, 0, 0, self._pad], mode="constant", value=0.0)
-
         # Dimensions
         N, D, C, R = x.size()
         D_out = D // 2
 
-        # Build outer sum, using broadcasting, this can be done with
-        # modifying the tensor dimensions:
-        # left: [n, d/2, c, r]
-        # right: [n, d/2, c, r]
-        left = x[:, self._scopes[0, :], :, :]
-        right = x[:, self._scopes[1, :], :, :]
+        # Get left and right partition probs
+        left = x[:, self.scopes[0, :], :, :]
+        right = x[:, self.scopes[1, :], :, :]
 
+        # Prepare for LogEinsumExp trick (see paper for details)
         left_max = torch.max(left, dim=2, keepdim=True)[0]
         left_prob = torch.exp(left - left_max)
         right_max = torch.max(right, dim=2, keepdim=True)[0]
         right_prob = torch.exp(right - right_max)
 
-        weights = self.weights
 
-        weights_shape_orig = weights.shape
-        weights = weights.view(D_out, self.num_sums_in ** 2, *weights_shape_orig[3:])
-        weights = F.softmax(weights, dim=1)
-        weights = weights.view(weights_shape_orig)
+        # Project weights into valid space
+        weights = self.weights
+        weights = weights.view(D_out, self.num_sums_out, self.num_repetitions, -1)
+        weights = F.softmax(weights, dim=-1)
+        weights = weights.view(self.weights.shape)
 
         # Einsum operation for sum(product(x))
         # n: batch, i: left-channels, j: right-channels, d:features, o: output-channels, r: repetitions
-        prob = torch.einsum("ndir,ndjr,dijor->ndor", left_prob, right_prob, weights)
+        prob = torch.einsum("ndir,ndjr,dorij->ndor", left_prob, right_prob, weights)
 
         # LogEinsumExp trick, re-add the max
         prob = torch.log(prob) + left_max + right_max
@@ -145,7 +136,7 @@ class EinsumLayer(AbstractLayer):
         # We now want to use `indices` to access one in_channel for each in_feature x out_channels block
         # index is of size in_feature
         weights = self.weights
-        in_features, in_channels, in_channels, out_channels, num_repetitions = weights.shape
+        in_features, out_channels, num_repetitions, in_channels, in_channels  = weights.shape
         num_samples = context.num_samples
 
         self._check_indices_repetition(context)
@@ -156,10 +147,10 @@ class EinsumLayer(AbstractLayer):
         for i in range(num_samples):
             tmp[i, :, :, :] = weights[
                 range(in_features),
-                :,
-                :,
                 context.indices_out[i],  # access the chosen output sum node
                 context.indices_repetition[i],  # access the chosen repetition
+                :,
+                :,
             ]
 
         weights = tmp
