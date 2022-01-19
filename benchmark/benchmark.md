@@ -19,7 +19,9 @@ num_classes = 1
 
 ## Results
 
-Note: All times are in milliseconds (ms).
+Notes: 
+- `si=simple-einet` and `og=EinsumNetworks`
+- all times are in milliseconds (ms)
 
 Summary: It's a tie (?). For some hyper-parameters `EinsumNetworks` is slower than `simple-einet` and for some others its faster. Generally, it seems that the backward pass scales better in `simple-einet`.
 
