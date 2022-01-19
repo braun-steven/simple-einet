@@ -122,8 +122,6 @@ class AbstractLeaf(AbstractLayer, ABC):
     representation, e.g. Gaussians.
 
     Implementing layers shall be valid distributions.
-
-    If the input at a specific position is NaN, the variable will be marginalized.
     """
 
     def __init__(
@@ -140,9 +138,8 @@ class AbstractLeaf(AbstractLayer, ABC):
         Args:
             num_features: Number of input features.
             num_channels: Number of input features.
-            out_channels: Number of parallel representations for each input feature.
+            num_leaves: Number of parallel representations for each input feature.
             num_repetitions: Number of parallel repetitions of this layer.
-            dropout: Dropout probability.
             cardinality: Number of random variables covered by a single leaf.
         """
         super().__init__(num_features=num_features, num_repetitions=num_repetitions)
@@ -205,7 +202,7 @@ class AbstractLeaf(AbstractLayer, ABC):
 class Normal(AbstractLeaf):
     """Gaussian layer. Maps each input feature to its gaussian log likelihood."""
 
-    def __init__(self, in_features: int, out_channels: int, num_repetitions: int = 1, dropout=0.0):
+    def __init__(self, num_features: int, num_channels: int, num_leaves: int, num_repetitions: int):
         """Creat a gaussian layer.
 
         Args:
@@ -214,11 +211,15 @@ class Normal(AbstractLeaf):
             num_repetitions: Number of parallel repetitions of this layer.
 
         """
-        super().__init__(in_features, out_channels, num_repetitions, dropout)
+        super().__init__(num_features, num_channels, num_leaves, num_repetitions)
 
         # Create gaussian means and stds
-        self.means = nn.Parameter(torch.randn(1, in_features, out_channels, num_repetitions))
-        self.stds = nn.Parameter(torch.rand(1, in_features, out_channels, num_repetitions))
+        self.means = nn.Parameter(
+            torch.randn(1, num_channels, num_features, num_leaves, num_repetitions)
+        )
+        self.stds = nn.Parameter(
+            torch.rand(1, num_channels, num_features, num_leaves, num_repetitions)
+        )
         self.gauss = dist.Normal(loc=self.means, scale=self.stds)
 
     def _get_base_distribution(self):
@@ -228,7 +229,7 @@ class Normal(AbstractLeaf):
 class Bernoulli(AbstractLeaf):
     """Bernoulli layer. Maps each input feature to its gaussian log likelihood."""
 
-    def __init__(self, in_features: int, out_channels: int, num_repetitions: int = 1, dropout=0.0):
+    def __init__(self, num_features: int, num_channels: int, num_leaves: int, num_repetitions: int):
         """Creat a gaussian layer.
 
         Args:
@@ -237,15 +238,16 @@ class Bernoulli(AbstractLeaf):
             num_repetitions: Number of parallel repetitions of this layer.
 
         """
-        super().__init__(in_features, out_channels, num_repetitions, dropout)
+        super().__init__(num_features, num_channels, num_leaves, num_repetitions)
 
         # Create bernoulli parameters
-        self.probs = nn.Parameter(torch.randn(1, in_features, out_channels, num_repetitions))
+        self.probs = nn.Parameter(
+            torch.randn(1, num_channels, num_features, num_leaves, num_repetitions)
+        )
 
     def _get_base_distribution(self):
         # Use sigmoid to ensure, that probs are in valid range
-        probs_ratio = torch.sigmoid(self.probs)
-        return dist.Bernoulli(probs=probs_ratio)
+        return dist.Bernoulli(probs=self.sigmoid(self.probs))
 
 
 class Binomial(AbstractLeaf):
@@ -268,14 +270,12 @@ class Binomial(AbstractLeaf):
 
         # Create binomial parameters
         self.probs = nn.Parameter(
-            0.5 + torch.rand(1, num_channels, num_features, num_leaves, num_repetitions)*0.1
+            0.5 + torch.rand(1, num_channels, num_features, num_leaves, num_repetitions) * 0.1
         )
-        # Learnable s
-        self.sigmoid_scale = nn.Parameter(torch.tensor(1.0))
 
     def _get_base_distribution(self):
         # Use sigmoid to ensure, that probs are in valid range
-        return dist.Binomial(self.total_count, probs=torch.sigmoid(self.probs * self.sigmoid_scale))
+        return dist.Binomial(self.total_count, probs=torch.sigmoid(self.probs))
 
 
 class MultiDistributionLayer(AbstractLeaf):
@@ -336,7 +336,7 @@ class MultiDistributionLayer(AbstractLeaf):
         # Check if scopes are already sorted, if so, inversion is not necessary in the forward pass
         self.needs_inversion = all_scopes != list(sorted(all_scopes))
 
-    def forward(self, x, marginalized_scopes: List[int]=None):
+    def forward(self, x, marginalized_scopes: List[int] = None):
 
         # Collect lls from all distributions
         lls_all = []
@@ -404,6 +404,9 @@ class MultivariateNormal(AbstractLeaf):
         """
         # TODO: Fix for num_repetitions
         super().__init__(in_features, out_channels, num_repetitions, dropout, cardinality)
+        raise NotImplementedError(
+            "MultivariateNormal has not been adapted to the new implementation yet - sorry."
+        )
         self._pad_value = in_features % cardinality
         self.out_features = np.ceil(in_features / cardinality).astype(int)
         self._n_dists = np.ceil(in_features / cardinality).astype(int)
@@ -547,76 +550,6 @@ class MultivariateNormal(AbstractLeaf):
         return mv
 
 
-class Beta(AbstractLeaf):
-    """Beta layer. Maps each input feature to its beta log likelihood."""
-
-    def __init__(self, in_features: int, out_channels: int, num_repetitions: int = 1, dropout=0.0):
-        """Creat a beta layer.
-
-        Args:
-            out_channels: Number of parallel representations for each input feature.
-            in_features: Number of input features.
-            num_repetitions: Number of parallel repetitions of this layer.
-
-        """
-        super().__init__(in_features, out_channels, num_repetitions, dropout)
-
-        # Create beta parameters
-        self.concentration0 = nn.Parameter(
-            torch.rand(1, in_features, out_channels, num_repetitions)
-        )
-        self.concentration1 = nn.Parameter(
-            torch.rand(1, in_features, out_channels, num_repetitions)
-        )
-        self.beta = dist.Beta(
-            concentration0=self.concentration0, concentration1=self.concentration1
-        )
-
-    def _get_base_distribution(self):
-        return self.beta
-
-
-class Cauchy(AbstractLeaf):
-    """Cauchy layer. Maps each input feature to cauchy beta log likelihood."""
-
-    def __init__(self, in_features: int, out_channels: int, num_repetitions: int = 1, dropout=0.0):
-        """Creat a cauchy layer.
-
-        Args:
-            out_channels: Number of parallel representations for each input feature.
-            in_features: Number of input features.
-            num_repetitions: Number of parallel repetitions of this layer.
-
-        """
-        super().__init__(in_features, out_channels, num_repetitions, dropout)
-        self.means = nn.Parameter(torch.randn(1, in_features, out_channels, num_repetitions))
-        self.stds = nn.Parameter(torch.rand(1, in_features, out_channels, num_repetitions))
-        self.cauchy = dist.Cauchy(loc=self.means, scale=self.stds)
-
-    def _get_base_distribution(self):
-        return self.cauchy
-
-
-class Chi2(AbstractLeaf):
-    """Chi square distribution layer"""
-
-    def __init__(self, in_features: int, out_channels: int, num_repetitions: int = 1, dropout=0.0):
-        """Creat a chi square layer.
-
-        Args:
-            out_channels: Number of parallel representations for each input feature.
-            in_features: Number of input features.
-            num_repetitions: Number of parallel repetitions of this layer.
-
-        """
-        super().__init__(in_features, out_channels, num_repetitions, dropout)
-        self.df = nn.Parameter(torch.rand(1, in_features, out_channels, num_repetitions))
-        self.chi2 = dist.Chi2(df=self.df)
-
-    def _get_base_distribution(self):
-        return self.chi2
-
-
 class Mixture(AbstractLeaf):
     def __init__(
         self,
@@ -683,124 +616,6 @@ class Mixture(AbstractLeaf):
             )
 
         return samples
-
-
-class IsotropicMultivariateNormal(AbstractLeaf):
-    """Isotropic multivariate gaussian layer.
-
-    The covariance is simplified to:
-
-    cov = sigma^2 * I
-
-    Maps k input feature to their multivariate gaussian log likelihood."""
-
-    def __init__(self, in_features, out_channels, num_repetitions, cardinality, dropout=0.0):
-        """Creat a gaussian layer.
-
-        Args:
-            out_channels: Number of parallel representations for each input feature.
-            cardinality: Number of features per gaussian.
-            in_features: Number of input features.
-
-        """
-        super().__init__(in_features, out_channels, num_repetitions, dropout)
-        self.cardinality = cardinality
-
-        # Number of different distributions: total number of features
-        # divided by the number of features in each gaussian
-
-        self._pad_value = in_features % cardinality
-        self._out_features = np.ceil(in_features / cardinality).astype(int)
-
-        self._n_dists = np.ceil(in_features / cardinality).astype(int)
-
-        # Create gaussian means and stds
-        self.means = nn.Parameter(
-            torch.randn(out_channels, self._n_dists, cardinality, num_repetitions)
-        )
-        self.stds = nn.Parameter(
-            torch.rand(out_channels, self._n_dists, cardinality, num_repetitions)
-        )
-        self.cov_factors = nn.Parameter(
-            torch.zeros(out_channels, self._n_dists, cardinality, num_repetitions),
-            requires_grad=False,
-        )
-        self.gauss = dist.LowRankMultivariateNormal(
-            loc=self.means, cov_factor=self.cov_factors, cov_diag=self.stds
-        )
-
-    def forward(self, x, marginalized_scopes: List[int]):
-        # TODO: Fix for num_repetitions
-
-        # Pad dummy variable via reflection
-        if self._pad_value != 0:
-            # Do unsqueeze and squeeze due to padding not being allowed on 2D tensors
-            x = x.unsqueeze(1)
-            x = F.pad(x, pad=[0, self._pad_value // 2], mode="reflect")
-            x = x.squeeze(1)
-
-        # Make room for out_channels of layer
-        # Output shape: [n, 1, d]
-        batch_size = x.shape[0]
-        x = x.reshape(batch_size, 1, self._n_dists, self.cardinality)
-
-        # Compute multivariate gaussians
-        # Output shape: [n, out_channels, d / cardinality]
-        x = self.gauss.log_prob(x)
-
-        # Output shape: [n, d / cardinality, out_channels]
-        x = x.permute((0, 2, 1))
-
-        x = self._marginalize_input(x)
-        x = self._apply_dropout(x)
-
-        return x
-
-    def sample(self, n=None, context: SamplingContext = None) -> torch.Tensor:
-        """TODO: Multivariate need special treatment."""
-        raise Exception("Not yet implemented")
-
-    def _get_base_distribution(self):
-        return self.gauss
-
-
-class Gamma(AbstractLeaf):
-    """Gamma distribution layer."""
-
-    def __init__(self, in_features: int, out_channels: int, num_repetitions: int = 1, dropout=0.0):
-        """Creat a gamma layer.
-
-        Args:
-            out_channels: Number of parallel representations for each input feature.
-            in_features: Number of input features.
-
-        """
-        super().__init__(in_features, out_channels, num_repetitions, dropout)
-        self.concentration = nn.Parameter(torch.rand(1, in_features, out_channels, num_repetitions))
-        self.rate = nn.Parameter(torch.rand(1, in_features, out_channels, num_repetitions))
-        self.gamma = dist.Gamma(concentration=self.concentration, rate=self.rate)
-
-    def _get_base_distribution(self):
-        return self.gamma
-
-
-class Poisson(AbstractLeaf):
-    """Poisson distribution layer."""
-
-    def __init__(self, in_features: int, out_channels: int, num_repetitions: int = 1, dropout=0.0):
-        """Creat a poisson layer.
-
-        Args:
-            out_channels: Number of parallel representations for each input feature.
-            in_features: Number of input features.
-
-        """
-        super().__init__(in_features, out_channels, num_repetitions, dropout)
-        self.rate = nn.Parameter(torch.rand(1, in_features, out_channels, num_repetitions))
-        self.poisson = dist.Poisson(rate=self.rate)
-
-    def _get_base_distribution(self):
-        return self.poisson
 
 
 class RatNormal(AbstractLeaf):
@@ -888,8 +703,8 @@ if __name__ == "__main__":
     leaf = MultiDistributionLayer(
         scopes_to_dist=[
             (2 + torch.arange(2), Binomial, {"total_count": 2}),
-            (torch.arange(2), RatNormal, {"min_sigma": 1e-3, "max_sigma": 1.}),
-            (4 + torch.arange(4), RatNormal, {"min_sigma": 1e-3, "max_sigma": 1.}),
+            (torch.arange(2), RatNormal, {"min_sigma": 1e-3, "max_sigma": 1.0}),
+            (4 + torch.arange(4), RatNormal, {"min_sigma": 1e-3, "max_sigma": 1.0}),
         ],
         num_features=8,
         num_channels=1,
