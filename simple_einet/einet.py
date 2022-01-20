@@ -251,15 +251,14 @@ class Einet(nn.Module):
         for module in self.modules():
             if hasattr(module, "_init_weights") and module != self:
                 module._init_weights()
-                continue
-
-            if isinstance(module, Sum):
+            elif isinstance(module, EinsumMixingLayer):
                 truncated_normal_(module.weights, std=0.5)
-                continue
-
-            if isinstance(module, RatNormal):
+            elif isinstance(module, EinsumLayer):
+                truncated_normal_(module.weights, std=0.5)
+            elif isinstance(module, Sum):
+                truncated_normal_(module.weights, std=0.5)
+            elif isinstance(module, RatNormal):
                 truncated_normal_(module.stds, std=0.1)
-                continue
 
     def mpe(
         self,
