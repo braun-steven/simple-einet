@@ -64,7 +64,10 @@ def dist_mode(distribution: dist.Distribution, context: SamplingContext = None) 
         mode = distribution.probs.clone()
         total_count = distribution.total_count
         mode = torch.floor(mode * (total_count + 1))
-        return mode.repeat(context.num_samples, 1, 1, 1, 1)
+        if mode.shape[0] == 1:
+            return mode.repeat(context.num_samples, 1, 1, 1, 1)
+        else:
+            return mode
     else:
         raise Exception(f"MPE not yet implemented for type {type(distribution)}")
 
