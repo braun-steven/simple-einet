@@ -99,7 +99,6 @@ class ConditionalBinomial(AbstractLeaf):
         # Sample from the specified distribution
         if context.is_mpe:
             samples = dist_mode(d, context)
-            samples = samples.unsqueeze(1)
         else:
             samples = d.sample()
 
