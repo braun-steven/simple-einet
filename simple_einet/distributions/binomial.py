@@ -7,7 +7,7 @@ import torch
 from torch import nn
 from simple_einet.type_checks import check_valid
 
-from simple_einet.distributions.abstract_leaf import AbstractLeaf, dist_forward, dist_sample
+from simple_einet.distributions.abstract_leaf import AbstractLeaf, dist_forward, dist_mode, dist_sample
 
 
 class Binomial(AbstractLeaf):
