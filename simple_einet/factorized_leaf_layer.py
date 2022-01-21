@@ -2,9 +2,9 @@ from typing import List
 import torch
 import numpy as np
 
-from .utils import SamplingContext
-from .layers import AbstractLayer
-from .distributions import AbstractLeaf
+from simple_einet.utils import SamplingContext
+from simple_einet.layers import AbstractLayer
+from simple_einet.distributions import AbstractLeaf
 
 
 class FactorizedLeaf(AbstractLayer):

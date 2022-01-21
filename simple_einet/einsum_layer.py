@@ -4,9 +4,9 @@ import numpy as np
 from torch import nn
 import torch
 
-from .utils import SamplingContext
-from .type_checks import check_valid
-from .layers import AbstractLayer
+from simple_einet.utils import SamplingContext
+from simple_einet.type_checks import check_valid
+from simple_einet.layers import AbstractLayer
 
 
 class EinsumLayer(AbstractLayer):
