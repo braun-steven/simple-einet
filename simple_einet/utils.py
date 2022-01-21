@@ -75,6 +75,9 @@ class SamplingContext:
     # Number of repetitions
     num_repetitions: int = None
 
+    # Evidence
+    evidence: torch.Tensor = None
+
     def __setattr__(self, key, value):
         if hasattr(self, key):
             super().__setattr__(key, value)

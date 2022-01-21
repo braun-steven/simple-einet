@@ -249,9 +249,9 @@ class Einet(nn.Module):
     def _init_weights(self):
         """Initiale the weights. Calls `_init_weights` on all modules that have this method."""
         for module in self.modules():
-            if hasattr(module, "_init_weights") and module != self:
-                module._init_weights()
-            elif isinstance(module, EinsumMixingLayer):
+            # if hasattr(module, "_init_weights") and module != self:
+            #     module._init_weights()
+            if isinstance(module, EinsumMixingLayer):
                 truncated_normal_(module.weights, std=0.5)
             elif isinstance(module, EinsumLayer):
                 truncated_normal_(module.weights, std=0.5)
@@ -346,6 +346,7 @@ class Einet(nn.Module):
                     temperature_leaves=temperature_leaves,
                     temperature_sums=temperature_sums,
                     num_repetitions=self.config.num_repetitions,
+                    evidence=evidence
                 )
             else:
                 # Start sampling one of the C root nodes TODO: check what happens if C=1
@@ -355,6 +356,7 @@ class Einet(nn.Module):
                     temperature_leaves=temperature_leaves,
                     temperature_sums=temperature_sums,
                     num_repetitions=self.config.num_repetitions,
+                    evidence=evidence,
                 )
                 ctx = self._sampling_root.sample(context=ctx)
 
