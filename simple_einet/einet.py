@@ -8,12 +8,12 @@ import torch
 from fast_pytorch_kmeans import KMeans
 from torch import nn
 
-from .distributions import AbstractLeaf, RatNormal, truncated_normal_
-from .einsum_layer import EinsumLayer, EinsumMixingLayer
-from .factorized_leaf_layer import FactorizedLeaf
-from .layers import Sum
-from .type_checks import check_valid
-from .utils import SamplingContext, provide_evidence
+from simple_einet.distributions import AbstractLeaf, RatNormal, truncated_normal_
+from simple_einet.einsum_layer import EinsumLayer, EinsumMixingLayer
+from simple_einet.factorized_leaf_layer import FactorizedLeaf
+from simple_einet.layers import Sum
+from simple_einet.type_checks import check_valid
+from simple_einet.utils import SamplingContext, provide_evidence
 
 logger = logging.getLogger(__name__)
 
