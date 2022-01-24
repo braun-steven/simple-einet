@@ -2,12 +2,17 @@ from torch import distributions as dist, nn
 import numpy as np
 import torchvision.models as models
 from simple_einet.utils import SamplingContext
-from typing import List, Tuple
+from typing import List, Tuple, Union
 import torch
 from torch import nn
 from simple_einet.type_checks import check_valid
 
-from simple_einet.distributions.abstract_leaf import AbstractLeaf, dist_forward, dist_mode, dist_sample
+from simple_einet.distributions.abstract_leaf import (
+    AbstractLeaf,
+    dist_forward,
+    dist_mode,
+    dist_sample,
+)
 
 
 class Binomial(AbstractLeaf):
@@ -47,6 +52,7 @@ class ConditionalBinomial(AbstractLeaf):
         num_repetitions: int,
         total_count: int,
         cond_fn: nn.Module,
+        cond_idxs: Union[List[int], torch.Tensor],
     ):
         super().__init__(
             num_features=num_features,
@@ -57,44 +63,66 @@ class ConditionalBinomial(AbstractLeaf):
 
         self.total_count = check_valid(total_count, int, lower_bound=1)
         self.cond_fn = cond_fn
+        self.cond_idxs = cond_idxs
 
-        # Create binomial parameters
-        # self.nn = NN(num_leaves, num_repetitions=num_repetitions)
-        # self.nn = Network(
-        #     shape=(1, num_channels, num_features // 2, num_leaves, num_repetitions),
-        #     num_layers=4,
-        #     activation_fn=nn.Tanh(),
-        # )
-
+        self.probs_conditioned_base = nn.Parameter(
+            0.5 + torch.rand(1, num_channels, num_features // 2, num_leaves, num_repetitions) * 0.1
+        )
         self.probs_unconditioned = nn.Parameter(
             0.5 + torch.rand(1, num_channels, num_features // 2, num_leaves, num_repetitions) * 0.1
         )
 
-    def get_cond_dist(self, x_cond):
+    def get_conditioned_distribution(self, x_cond: torch.Tensor):
+        """
+        Get the conditioned torch distribution. That is, use `x_cond` to generate the paramters for the binomial
+        distribution.
+
+        Args:
+            x_cond: Input condition.
+
+        Returns:
+            Parameters for the binomial distribution.
+        """
         hw = int(np.sqrt(x_cond.shape[2]))
+        assert hw * hw == x_cond.shape[2], "Input was not square."
         x_cond_shape = x_cond.shape
-        probs = self.cond_fn(x_cond.view(-1, x_cond.shape[1], hw, hw))
-        probs = probs.view(x_cond_shape[0], x_cond_shape[1], self.num_leaves, self.num_repetitions,
-                           hw * hw)
-        probs = probs.permute(0, 1, 4, 2, 3)
+
+        # Get conditioned parameters
+        probs_cond = self.cond_fn(x_cond.view(-1, x_cond.shape[1], hw, hw))
+        probs_cond = probs_cond.view(
+            x_cond_shape[0],
+            x_cond_shape[1],
+            self.num_leaves,
+            self.num_repetitions,
+            hw * hw,
+        )
+        probs_cond = probs_cond.permute(0, 1, 4, 2, 3)
+
+        # Add conditioned parameters to default parameters
+        probs_cond = self.probs_conditioned_base + probs_cond
+
         probs_unc = self.probs_unconditioned.expand(x_cond.shape[0], -1, -1, -1, -1)
-        probs = torch.cat((probs, probs_unc), dim=2)
+        probs = torch.cat((probs_cond, probs_unc), dim=2)
         d = dist.Binomial(self.total_count, logits=probs)
         return d
 
     def forward(self, x, marginalized_scopes: List[int]):
-        x_cond = x[:, :, x.shape[2] // 2 :, None, None]
-        d = self.get_cond_dist(x_cond)
+        # Get conditional input (TODO: make this flexible with an index array defined during construction)
+        x_cond = x[:, :, self.cond_idxs, None, None]
+        d = self.get_conditioned_distribution(x_cond)
+
+        # Compute lls
         x = dist_forward(d, x)
 
+        # Marginalize
         x = self._marginalize_input(x, marginalized_scopes)
 
         return x
 
     def sample(self, num_samples: int = None, context: SamplingContext = None) -> torch.Tensor:
         ev = context.evidence
-        x_cond = ev[:, :, ev.shape[2] // 2 :, None, None]
-        d = self.get_cond_dist(x_cond)
+        x_cond = ev[:, :, self.cond_idxs, None, None]
+        d = self.get_conditioned_distribution(x_cond)
 
         # Sample from the specified distribution
         if context.is_mpe:
@@ -102,7 +130,13 @@ class ConditionalBinomial(AbstractLeaf):
         else:
             samples = d.sample()
 
-        num_samples, num_channels, num_features, num_leaves, num_repetitions = samples.shape
+        (
+            num_samples,
+            num_channels,
+            num_features,
+            num_leaves,
+            num_repetitions,
+        ) = samples.shape
 
         # Index samples to get the correct repetitions
         r_idxs = context.indices_repetition.view(-1, 1, 1, 1, 1)
@@ -121,33 +155,3 @@ class ConditionalBinomial(AbstractLeaf):
 
     def _get_base_distribution(self) -> dist.Distribution:
         raise NotImplementedError("This should not happen.")
-
-
-class Linear(nn.Module):
-    def __init__(self, shape: List[int]) -> None:
-        super().__init__()
-        self.weights = nn.Parameter(torch.rand(shape))
-        self.bias = nn.Parameter(torch.rand(shape))
-
-    def forward(self, x):
-        return self.weights * x + self.bias
-
-
-class Network(nn.Module):
-    def __init__(self, shape: List[int], num_layers: int, activation_fn) -> None:
-        super().__init__()
-
-        self.resnet = models.resnet18()
-        # layers = []
-        # for i in range(num_layers):
-        #     layers.append(Linear(shape))
-
-        #     # Skip activation after last layer
-        #     if i < num_layers - 1:
-        #         layers.append(activation_fn)
-
-        # self.seq = nn.Sequential(*layers)
-
-    def forward(self, x):
-        breakpoint()
-        return self.resnet(x)
