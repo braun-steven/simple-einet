@@ -2,7 +2,7 @@
 
 This repository contains code for my personal, simplistic, EinsumNetworks implementation.
 
-For a speed benchmark comparison against the official EinsumNetworks implementation, check out [benchmark.md](./benchmark/benchmark.md) (spoiler: the performance is similar).
+For a speed benchmark comparison against the official EinsumNetworks implementation, check out [benchmark.md](./benchmark/benchmark.md) (short: simple-einet is faster in all dimensions except the input-channel size but scales similar to EinsumNetworks).
 
 ## MNIST Samples
 Some samples from the `[0, 1]` class-subset of MNIST [mnist.py](./mnist.py):
