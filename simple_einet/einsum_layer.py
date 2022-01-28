@@ -38,25 +38,9 @@ class EinsumLayer(AbstractLayer):
 
         self.weights = nn.Parameter(ws)
 
-        # Collect scopes for each product child
-        self.scopes = [[] for _ in range(self.cardinality)]
-
-        # Create sequence of scopes
-        scopes = np.arange(self.num_features)
-
-        # For two consecutive scopes
-        for i in range(0, self.num_features, self.cardinality):
-            for j in range(cardinality):
-                if i + j < num_features:
-                    self.scopes[j].append(scopes[i + j])
-                else:
-                    # Case: d mod cardinality != 0 => Create marginalized nodes with prob 1.0
-                    # Pad x in forward pass on the right: [n, d, c] -> [n, d+1, c] where index
-                    # d+1 is the marginalized node (index "in_features")
-                    self.scopes[j].append(self.num_features)
-
-        # Transform into numpy array for easier indexing
-        self.scopes = np.array(self.scopes)
+        # Create scope indices
+        self.register_buffer("scopes_left", torch.arange(0, self.num_features, 2))
+        self.register_buffer("scopes_right", torch.arange(1, self.num_features, 2))
 
         # Create index map from flattened to coordinates (only needed in sampling)
         self.unraveled_channel_indices = nn.Parameter(
@@ -98,8 +82,8 @@ class EinsumLayer(AbstractLayer):
         D_out = D // 2
 
         # Get left and right partition probs
-        left = x[:, self.scopes[0, :], :, :]
-        right = x[:, self.scopes[1, :], :, :]
+        left = x[:, 0::2]
+        right = x[:, 1::2]
 
         # Prepare for LogEinsumExp trick (see paper for details)
         left_max = torch.max(left, dim=2, keepdim=True)[0]
