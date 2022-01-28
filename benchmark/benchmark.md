@@ -7,271 +7,247 @@ The benchmark code can be found in [benchmark.py](./benchmark.py).
 The default values for different hyperparameters are as follows:
 
 ```python
-batch_size = 64
+batch_size = 256
 num_features = 512
 depth = 5
-num_sums = 16
-num_leaves = 16
+num_sums = 32
+num_leaves = 32
+num_repetitions = 32
 num_channels = 1
-num_repetitions = 16
 num_classes = 1
 ```
 
 ## Results
 
-Notes: 
-- `si=simple-einet` and `og=EinsumNetworks`
-- all times are in milliseconds (ms)
+The `simple-einet` implementation is 1.5x - 3.0x faster almost everywhere but scales similar to the official `EinsumNetworks` implementation
 
-Summary: It's a tie (?). For some hyper-parameters `EinsumNetworks` is slower than `simple-einet` and for some others its faster. Generally, it seems that the backward pass scales better in `simple-einet`.
-
-### Batch Size
+`OOM` indicates an `OutOfMemory` runtime exception.
 
 ```
-[--- batch_size-forward ---]
-            |   si   |   og
-        --------------------
-         1  |   3.5  |   3.9
-         2  |   4.2  |   3.5
-         4  |   3.7  |   3.2
-         8  |   3.8  |   3.5
-        16  |   3.8  |   3.7
-        32  |   5.2  |   3.9
-        64  |   5.4  |   3.8
-       128  |   7.3  |   3.9
-       256  |  11.1  |   7.1
-       512  |  19.7  |  18.2
-      1024  |  33.9  |  38.2
-      2048  |  67.1  |  74.1
+[------------ batch_size-forward ------------]
+            |  simple-einet  |  EinsumNetworks
+1 threads: -----------------------------------
+         1  |       2.5      |        3.4     
+         2  |       2.3      |        3.3     
+         4  |       2.4      |        3.1     
+         8  |       2.9      |        3.1     
+        16  |       4.7      |        3.8     
+        32  |       8.6      |        6.7     
+        64  |      14.4      |       14.5     
+       128  |      27.3      |       36.8     
+       256  |      54.2      |       75.3     
+       512  |     106.0      |      146.1     
+      1024  |     211.7      |      292.5     
+      2048  |     418.7      |      575.9     
 
+Times are in milliseconds (ms).
 
-[--- batch_size-backward ----]
-            |    si   |    og
-        ----------------------
-         1  |   10.3  |   10.7
-         2  |   10.0  |   11.6
-         4  |   10.1  |   11.5
-         8  |   10.0  |   12.0
-        16  |   11.1  |   13.2
-        32  |   11.5  |   13.7
-        64  |   12.2  |   12.6
-       128  |   17.6  |   13.5
-       256  |   25.5  |   26.7
-       512  |   45.5  |   63.5
-      1024  |   90.2  |  132.7
-      2048  |  182.6  |  271.4
+[----------- batch_size-backward ------------]
+            |  simple-einet  |  EinsumNetworks
+1 threads: -----------------------------------
+         1  |       7.1      |       10.8     
+         2  |       6.9      |       10.5     
+         4  |       7.4      |       11.3     
+         8  |       7.7      |       12.1     
+        16  |      10.6      |       15.1     
+        32  |      14.9      |       22.9     
+        64  |      27.7      |       43.1     
+       128  |      58.3      |       99.9     
+       256  |     119.7      |      218.8     
+       512  |     240.2      |      435.8     
+      1024  |     481.2      |      873.1     
 
-```
+Times are in milliseconds (ms).
 
-### Number of Features/Random Variables
+[----------- num_features-forward -----------]
+            |  simple-einet  |  EinsumNetworks
+1 threads: -----------------------------------
+         4  |       1.9      |        2.8     
+         8  |       3.5      |        7.6     
+        16  |       8.0      |       22.8     
+        32  |      20.3      |       53.1     
+        64  |      22.7      |       53.7     
+       128  |      26.8      |       56.6     
+       256  |      34.7      |       62.7     
+       512  |      53.7      |       74.2     
+      1024  |      91.9      |      100.0     
+      2048  |     167.3      |      146.2     
+      4096  |     313.5      |      253.5     
 
-```
-[-- num_features-forward -]
-            |   si   |   og
-        -------------------
-         4  |   2.2  |  2.1
-         8  |   2.7  |  2.7
-        16  |   3.1  |  3.6
-        32  |   3.7  |  3.8
-        64  |   3.6  |  4.8
-       128  |   3.8  |  3.8
-       256  |   4.3  |  3.9
-       512  |   5.4  |  3.8
-      1024  |   7.0  |  3.8
-      2048  |  11.2  |  5.1
+Times are in milliseconds (ms).
 
+[---------- num_features-backward -----------]
+            |  simple-einet  |  EinsumNetworks
+1 threads: -----------------------------------
+         4  |       4.3      |       12.5     
+         8  |       8.6      |       27.7     
+        16  |      18.7      |       65.5     
+        32  |      43.2      |      143.7     
+        64  |      47.8      |      145.5     
+       128  |      57.4      |      155.0     
+       256  |      77.8      |      177.4     
+       512  |     119.6      |      218.2     
+      1024  |     202.4      |      302.3     
+      2048  |     370.9      |      472.1     
+      4096  |     628.7      |      729.1     
 
-[- num_features-backward --]
-            |   si   |   og
-        --------------------
-         4  |   5.6  |   6.0
-         8  |   6.2  |   7.3
-        16  |   7.6  |   9.0
-        32  |   9.6  |  11.4
-        64  |   8.9  |  11.0
-       128  |   9.5  |  12.3
-       256  |  10.2  |  10.3
-       512  |  10.8  |  10.8
-      1024  |  14.2  |  12.2
-      2048  |  18.9  |  16.9
+Times are in milliseconds (ms).
 
-```
+[-------------- depth-forward ---------------]
+            |  simple-einet  |  EinsumNetworks
+1 threads: -----------------------------------
+         1  |      36.9      |       10.9     
+         2  |      38.0      |       12.5     
+         3  |      39.2      |       19.2     
+         4  |      43.3      |       38.1     
+         5  |      53.8      |       75.3     
+         6  |      71.3      |      151.0     
+         7  |     107.5      |      301.9     
+         8  |     217.8      |        OOM     
+         9  |     526.7      |        OOM     
 
-### Depth
+Times are in milliseconds (ms).
 
-```
+[-------------- depth-backward --------------]
+            |  simple-einet  |  EinsumNetworks
+1 threads: -----------------------------------
+         1  |      82.9      |       55.7     
+         2  |      84.7      |       63.8     
+         3  |      89.4      |       83.6     
+         4  |      97.7      |      129.6     
+         5  |     120.4      |      220.0     
+         6  |     158.3      |      401.5     
+         7  |     237.9      |      765.7     
 
-[----- depth-forward ------]
-            |   si   |   og
-        --------------------
-         1  |   3.2  |   1.5
-         2  |   3.7  |   2.2
-         3  |   4.1  |   2.6
-         4  |   4.6  |   3.2
-         5  |   5.2  |   3.4
-         6  |   6.1  |   4.3
-         7  |   7.4  |   5.6
-         8  |   8.8  |   9.2
-         9  |  13.5  |  17.3
+Times are in milliseconds (ms).
 
+[------------- num_sums-forward -------------]
+            |  simple-einet  |  EinsumNetworks
+1 threads: -----------------------------------
+         1  |      49.1      |       50.9     
+         2  |      50.0      |       52.5     
+         4  |      49.8      |       52.9     
+         8  |      50.1      |       53.0     
+        16  |      50.7      |       54.9     
+        32  |      53.6      |       74.4     
+        64  |      65.9      |      139.9     
+       128  |     156.5      |        OOM     
 
-[----- depth-backward -----]
-            |   si   |   og
-        --------------------
-         1  |   5.4  |   3.8
-         2  |   7.3  |   5.7
-         3  |   8.7  |   6.9
-         4  |  10.6  |  10.2
-         5  |  10.6  |  10.4
-         6  |  12.6  |  14.0
-         7  |  15.6  |  22.8
-         8  |  23.0  |  39.9
-         9  |  32.3  |  73.9
+Times are in milliseconds (ms).
 
-```
+[------------ num_sums-backward -------------]
+            |  simple-einet  |  EinsumNetworks
+1 threads: -----------------------------------
+         1  |     102.7      |      152.9     
+         2  |     106.4      |      157.8     
+         8  |     106.9      |      158.5     
+        16  |     110.1      |      166.6     
+        32  |     120.4      |      219.7     
+        64  |     164.1      |      404.4     
 
-### Number of Sum Nodes per Einsumlayer
+Times are in milliseconds (ms).
 
-```
+[------------ num_leaves-forward ------------]
+            |  simple-einet  |  EinsumNetworks
+1 threads: -----------------------------------
+         1  |      10.1      |       23.5     
+         2  |       6.4      |       24.1     
+         4  |       8.0      |       25.5     
+         8  |      14.4      |       28.7     
+        16  |      26.0      |       38.7     
+        32  |      53.2      |       75.2     
+        64  |     130.1      |      181.6     
+       128  |     363.7      |        OOM     
 
-[---- num_sums-forward ---]
-            |   si  |   og
-        -------------------
-         1  |  5.2  |   3.3
-         2  |  6.1  |   3.8
-         4  |  5.5  |   3.6
-         8  |  5.3  |   4.6
-        16  |  5.0  |   3.8
-        32  |  5.9  |   3.8
-        64  |  8.7  |  11.3
+Times are in milliseconds (ms).
 
+[----------- num_leaves-backward ------------]
+            |  simple-einet  |  EinsumNetworks
+1 threads: -----------------------------------
+         1  |      20.7      |       68.4     
+         2  |      17.0      |       68.9     
+         4  |      19.6      |       73.0     
+         8  |      29.7      |       83.2     
+        16  |      57.2      |      116.9     
+        32  |     119.6      |      218.8     
+        64  |     274.8      |      504.4     
 
-[--- num_sums-backward ----]
-            |   si   |   og
-        --------------------
-         1  |  11.0  |  12.4
-         2  |  10.9  |  11.2
-         4  |  11.2  |  11.5
-         8  |  13.3  |  12.0
-        16  |  12.6  |  11.2
-        32  |  11.8  |  14.7
-        64  |  20.4  |  41.6
+Times are in milliseconds (ms).
 
-```
+[----------- num_channels-forward -----------]
+            |  simple-einet  |  EinsumNetworks
+1 threads: -----------------------------------
+         1  |      54.4      |       74.1     
+         2  |      65.8      |       78.4     
+         4  |      89.9      |       85.1     
+         8  |     138.1      |       97.5     
+        16  |     235.1      |      125.8     
 
-### Number of Distributions per Feature/Random Variable
+Times are in milliseconds (ms).
 
-```
+[---------- num_channels-backward -----------]
+            |  simple-einet  |  EinsumNetworks
+1 threads: -----------------------------------
+         1  |     120.5      |      219.8     
+         2  |     175.1      |      249.2     
+         4  |     288.4      |      303.8     
+         8  |     452.0      |      391.3     
 
-[--- num_leaves-forward ---]
-            |   si   |   og
-        --------------------
-         1  |   3.6  |   3.2
-         2  |   3.7  |   4.6
-         4  |   3.6  |   3.6
-         8  |   4.8  |   3.7
-        16  |   4.9  |   3.7
-        32  |   7.5  |   4.7
-        64  |  12.7  |  19.7
+Times are in milliseconds (ms).
 
+[--------- num_repetitions-forward ----------]
+            |  simple-einet  |  EinsumNetworks
+1 threads: -----------------------------------
+         1  |       2.2      |        2.8     
+         2  |       3.2      |        3.0     
+         4  |       5.4      |        5.1     
+         8  |      10.7      |       11.3     
+        16  |      22.8      |       30.4     
+        32  |      53.7      |       75.2     
+        64  |     109.4      |      192.2     
+       128  |     224.1      |      520.7     
 
-[-- num_leaves-backward ---]
-            |   si   |   og
-        --------------------
-         1  |   8.8  |  10.5
-         2  |  10.8  |  10.2
-         4  |   9.1  |  10.9
-         8  |   9.7  |  11.3
-        16  |  10.6  |  10.5
-        32  |  14.9  |  16.8
-        64  |  28.9  |  52.6
+Times are in milliseconds (ms).
 
-```
+[--------- num_repetitions-backward ---------]
+            |  simple-einet  |  EinsumNetworks
+1 threads: -----------------------------------
+         1  |       5.8      |        10.3    
+         2  |       6.3      |        11.4    
+         4  |       9.8      |        18.1    
+         8  |      21.6      |        39.5    
+        16  |      51.4      |        95.4    
+        32  |     119.1      |       220.2    
+        64  |     250.6      |       520.8    
+       128  |     504.6      |      1316.4    
 
-### Number of Input Channels per Feature/Random Variable
-(e.g. image color channels: RGB)
+Times are in milliseconds (ms).
 
-```
+[----------- num_classes-forward ------------]
+            |  simple-einet  |  EinsumNetworks
+1 threads: -----------------------------------
+         1  |      53.9      |       75.1     
+         2  |      53.9      |       75.0     
+         4  |      54.0      |       75.1     
+         8  |      54.1      |       75.5     
+        16  |      53.5      |       75.5     
+        32  |      54.0      |       75.2     
+        64  |      53.7      |       74.7     
+       128  |      54.3      |       75.6     
 
-[-- num_channels-forward --]
-            |   si   |   og
-        --------------------
-         1  |   5.3  |   3.4
-         2  |   6.0  |   4.1
-         4  |   7.4  |   4.0
-         8  |  10.6  |   3.5
-        16  |  17.0  |   5.2
-        32  |  30.3  |   8.7
-        64  |  55.2  |  12.8
+Times are in milliseconds (ms).
 
+[----------- num_classes-backward -----------]
+            |  simple-einet  |  EinsumNetworks
+1 threads: -----------------------------------
+         1  |     119.8      |      218.5     
+         2  |     120.6      |      220.7     
+         4  |     120.2      |      220.3     
+         8  |     119.9      |      221.4     
+        16  |     119.8      |      221.2     
+        32  |     120.4      |      217.7     
+        64  |     120.4      |      221.2     
+       128  |     121.0      |      219.4     
 
-[-- num_channels-backward ---]
-            |    si   |    og
-        ----------------------
-         1  |   10.5  |   11.7
-         2  |   13.5  |   11.8
-         4  |   16.3  |   12.7
-         8  |   24.7  |   17.8
-        16  |   36.2  |   30.4
-        32  |   65.8  |   57.3
-        64  |  120.6  |  109.1
-
-```
-
-### Number of Network Repetitions
-
-```
-
-[ num_repetitions-forward -]
-            |   si   |   og
-        --------------------
-         1  |   3.2  |   3.3
-         2  |   3.6  |   3.8
-         4  |   3.7  |   3.7
-         8  |   4.0  |   4.6
-        16  |   5.6  |   3.4
-        32  |   7.3  |   4.6
-        64  |  13.4  |  12.5
-
-
-[ num_repetitions-backward ]
-            |   si   |   og
-        --------------------
-         1  |   8.9  |  10.6
-         2  |  10.3  |  12.4
-         4  |  10.8  |  11.1
-         8  |  10.7  |  10.7
-        16  |  11.2  |  12.4
-        32  |  17.0  |  16.5
-        64  |  26.5  |  38.4
-
-```
-
-### Number of Classes
-
-```
-
-[- num_classes-forward --]
-            |   si  |   og
-        ------------------
-         1  |  5.2  |  3.7
-         2  |  5.3  |  4.0
-         4  |  5.7  |  4.1
-         8  |  5.2  |  3.7
-        16  |  5.2  |  3.4
-        32  |  6.2  |  4.3
-        64  |  5.1  |  3.7
-
-
-[-- num_classes-backward --]
-            |   si   |   og
-        --------------------
-         1  |  11.9  |  13.5
-         2  |  11.9  |  12.1
-         4  |  12.2  |  12.0
-         8  |  11.5  |  12.1
-        16  |  10.8  |  13.0
-        32  |  10.8  |  12.2
-        64  |  10.7  |  11.8
-
+Times are in milliseconds (ms).
 ```
