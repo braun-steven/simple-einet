@@ -162,10 +162,17 @@ class AbstractLeaf(AbstractLayer, ABC):
     def _marginalize_input(self, x: torch.Tensor, marginalized_scopes: List[int]) -> torch.Tensor:
         # Marginalize nans set by user
         if marginalized_scopes is not None:
+
+            # Transform to tensor
             if type(marginalized_scopes) != torch.Tensor:
-                marginalized_scopes = torch.tensor(marginalized_scopes)
-            s = marginalized_scopes.div(self.cardinality, rounding_mode="floor")
-            s = list(set(s.tolist()))
+                s = torch.tensor(marginalized_scopes)
+            else:
+                s = marginalized_scopes
+
+            # Adjust for leaf cardinality
+            if self.cardinality > 1:
+                s = marginalized_scopes.div(self.cardinality, rounding_mode="floor")
+
             x[:, :, s] = self.marginalization_constant
         return x
 
