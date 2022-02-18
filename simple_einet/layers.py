@@ -14,11 +14,14 @@ from simple_einet.utils import SamplingContext
 logger = logging.getLogger(__name__)
 
 
+
+
 class AbstractLayer(nn.Module, ABC):
-    def __init__(self, num_features: int, num_repetitions: int = 1):
+    def __init__(self, num_features: int, num_repetitions: int = 1, use_em = False):
         super().__init__()
         self.num_features = check_valid(num_features, int, 1)
         self.num_repetitions = check_valid(num_repetitions, int, 1)
+        self.use_em = use_em
 
     @abstractmethod
     def sample(
@@ -27,8 +30,23 @@ class AbstractLayer(nn.Module, ABC):
         """
         Sample from this layer.
         Args:
+            num_samples: Number of samples.
             context: Sampling context.
-            n: Number of samples.
+
+        Returns:
+            torch.Tensor: Generated samples.
+        """
+        pass
+
+    @abstractmethod
+    def sample(
+        self, num_samples: int = None, context: SamplingContext = None
+    ) -> Union[SamplingContext, torch.Tensor]:
+        """
+        Sample from this layer.
+        Args:
+            num_samples: Number of samples.
+            context: Sampling context.
 
         Returns:
             torch.Tensor: Generated samples.

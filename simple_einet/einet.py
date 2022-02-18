@@ -45,6 +45,9 @@ class EinetConfig:
     dropout: float = 0.0
     leaf_type: Type = None
     leaf_kwargs: Dict[str, Any] = None
+    use_em: bool = False
+    em_frequency: int = 1
+    em_stepsize: float = 0.05
 
     def assert_valid(self):
         """Check whether the configuration is valid."""
@@ -58,11 +61,13 @@ class EinetConfig:
         self.num_repetitions = check_valid(self.num_repetitions, int, 1)
         self.num_leaves = check_valid(self.num_leaves, int, 1)
         self.dropout = check_valid(self.dropout, float, 0.0, 1.0, allow_none=True)
+        self.em_frequency = check_valid(self.em_frequency, int, 1)
+        self.em_stepsize = check_valid(self.em_stepsize, float, 0.0)
         assert self.leaf_type is not None, "EinetConfig.leaf_type parameter was not set!"
 
-        assert isinstance(self.leaf_type, type) and issubclass(
-            self.leaf_type, AbstractLeaf
-        ), f"Parameter EinetConfig.leaf_base_class must be a subclass type of Leaf but was {self.leaf_type}."
+        # assert isinstance(self.leaf_type, type) and issubclass(
+        #     self.leaf_type, AbstractLeaf
+        # ), f"Parameter EinetConfig.leaf_base_class must be a subclass type of Leaf but was {self.leaf_type}."
 
         assert (
             2 ** self.depth <= self.num_features
@@ -104,6 +109,24 @@ class Einet(nn.Module):
 
         # Initialize weights
         self._init_weights()
+
+        # Set em counter
+        self._em_counter = 0
+
+    def em_update(self):
+        # Increase counter
+        self._em_counter += 1
+
+        # If counter == update frequency
+        if self._em_counter == self.config.em_frequency:
+
+            # Reset counter
+            self._em_counter = 0
+
+            # Do an em step
+            self.leaf.base_leaf.em_update(stepsize=self.config.em_stepsize)
+            for layer in self.einsum_layers:
+                layer.em_update(stepsize=self.config.em_stepsize)
 
     def forward(self, x: torch.Tensor, marginalization_mask: torch.Tensor = None) -> torch.Tensor:
         """
@@ -192,6 +215,7 @@ class Einet(nn.Module):
                 num_sums_in=_num_sums_in,
                 num_sums_out=_num_sums_out,
                 num_repetitions=self.config.num_repetitions,
+                use_em=self.config.use_em,
             )
 
             einsum_layers.append(layer)
@@ -208,6 +232,7 @@ class Einet(nn.Module):
                 num_features=1,
                 num_sums_in=self.config.num_repetitions,
                 num_sums_out=self.config.num_classes,
+                use_em=self.config.use_em,
             )
 
         # Construct sampling root with weights according to priors for sampling
@@ -229,13 +254,16 @@ class Einet(nn.Module):
         base_leaf = self.config.leaf_type(
             num_features=self.config.num_features,
             num_channels=self.config.num_channels,
-            num_leaves=self.config.num_leaves,
-            num_repetitions=self.config.num_repetitions,
+            array_shape=[self.config.num_leaves, self.config.num_repetitions],
+            use_em=self.config.use_em,
+            # num_leaves=self.config.num_leaves,
+            # num_repetitions=self.config.num_repetitions,
             **self.config.leaf_kwargs,
         )
 
         return FactorizedLeaf(
-            num_features=base_leaf.out_features,
+            # num_features=base_leaf.out_features,
+            num_features=self.config.num_features,
             num_features_out=num_features_out,
             num_repetitions=self.config.num_repetitions,
             base_leaf=base_leaf,
@@ -251,14 +279,15 @@ class Einet(nn.Module):
         for module in self.modules():
             # if hasattr(module, "_init_weights") and module != self:
             #     module._init_weights()
-            if isinstance(module, EinsumMixingLayer):
-                truncated_normal_(module.weights, std=0.5)
-            elif isinstance(module, EinsumLayer):
-                truncated_normal_(module.weights, std=0.5)
-            elif isinstance(module, Sum):
-                truncated_normal_(module.weights, std=0.5)
-            elif isinstance(module, RatNormal):
-                truncated_normal_(module.stds, std=0.1)
+            pass
+            # if isinstance(module, EinsumMixingLayer):
+            #     truncated_normal_(module.weights, std=0.5)
+            # elif isinstance(module, EinsumLayer):
+            #     truncated_normal_(module.weights, std=0.5)
+            # elif isinstance(module, Sum):
+            #     truncated_normal_(module.weights, std=0.5)
+            # elif isinstance(module, RatNormal):
+            #     truncated_normal_(module.stds, std=0.1)
 
     def mpe(
         self,
@@ -346,7 +375,7 @@ class Einet(nn.Module):
                     temperature_leaves=temperature_leaves,
                     temperature_sums=temperature_sums,
                     num_repetitions=self.config.num_repetitions,
-                    evidence=evidence
+                    evidence=evidence,
                 )
             else:
                 # Start sampling one of the C root nodes TODO: check what happens if C=1

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import torch
 from rich.traceback import install
+from simple_einet.distributions.exponential_family import BinomialArray
 import tqdm
 import torch.autograd.profiler as profiler
 
@@ -65,7 +66,8 @@ def train(args, model: Union[Einet, EinetMixture], device, train_loader, optimiz
             has_gauss_dist=has_gauss_dist,
         )
 
-        optimizer.zero_grad()
+        if not model.config.use_em:
+            optimizer.zero_grad()
 
         # Generate outputs
         outputs = model(data)
@@ -75,13 +77,20 @@ def train(args, model: Union[Einet, EinetMixture], device, train_loader, optimiz
             # In classification, compute cross entropy
             loss = cross_entropy(outputs, target)
         else:
-            loss = -1 * log_likelihoods(outputs).sum()
+            loss = log_likelihoods(outputs).sum()
+            if not model.config.use_em:
+                loss = -1 * loss
 
         # Compute gradients
         loss.backward()
+        breakpoint()
+
 
         # Update weights
-        optimizer.step()
+        if model.config.use_em:
+            model.em_update()
+        else:
+            optimizer.step()
 
         # Logging
         if batch_idx % args.log_interval == 0:
@@ -193,13 +202,13 @@ if __name__ == "__main__":
         num_leaves=args.I,
         num_repetitions=args.R,
         num_classes=num_classes,
-        leaf_type=Binomial,
+        # leaf_type=Binomial,
+        leaf_type=BinomialArray,
         leaf_kwargs={"total_count": n_bins - 1},
-        # leaf_base_class=MultivariateNormal,
-        # leaf_base_kwargs={"cardinality": 2, "min_sigma": 1e-5, "max_sigma": 0.1},
-        # leaf_type=RatNormal,
-        # leaf_kwargs={"min_sigma": 1e-3, "max_sigma": 2.0},
         dropout=0.0,
+        use_em=True,
+        em_stepsize=0.05,
+        em_frequency=1,
     )
     if args.mixture > 1:
         model = EinetMixture(n_components=args.mixture, einet_config=config).to(device)
@@ -214,7 +223,7 @@ if __name__ == "__main__":
 
     # Optimize Einet parameters (weights and leaf params)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=5e-1, verbose=True)
+    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=2, gamma=5e-1, verbose=True)
 
     print(model)
     home_dir = os.getenv("HOME")
@@ -243,7 +252,7 @@ if __name__ == "__main__":
 
         for epoch in range(1, args.epochs + 1):
             train(args, model, device, train_loader, optimizer, epoch)
-            test(model, device, test_loader, "Test")
+            # test(model, device, test_loader, "Test")
             lr_scheduler.step()
 
             # ic(model.einsum_layers[0].weights.view(-1).softmax(dim=0))
@@ -268,7 +277,7 @@ if __name__ == "__main__":
         #######################
         if type(model) == Einet:
             samples = model.sample(
-                num_samples=64,
+                num_samples=100,
                 temperature_sums=args.temperature_sums,
                 temperature_leaves=args.temperature_leaves,
             )
@@ -281,10 +290,10 @@ if __name__ == "__main__":
 
         samples = samples.view(-1, *data_shape)
         if not has_gauss_dist:
-            grid_kwargs = dict(nrow=8, normalize=True)
+            grid_kwargs = dict(nrow=10, normalize=True, padding=1, pad_value=1.0)
             samples = samples / 255
         else:
-            grid_kwargs = dict(nrow=8, normalize=True, value_range=(-0.5, 0.5))
+            grid_kwargs = dict(nrow=10, normalize=True, value_range=(-0.5, 0.5), padding=1, pad_value=1.0)
 
         grid = torchvision.utils.make_grid(samples, **grid_kwargs)
         # img = Image.fromarray(np.uint8(grid.permute(1, 2, 0).cpu().numpy() * 255))
@@ -308,7 +317,7 @@ if __name__ == "__main__":
         # ground-truth #
         ################
         test_x, _ = next(iter(test_loader))
-        test_x = test_x[:64].to(device)
+        test_x = test_x[:100].to(device)
         test_x = preprocess(
             test_x,
             n_bits,
