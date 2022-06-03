@@ -75,9 +75,7 @@ def main(args, model: SpnGenerative, results_dir, hparams: Dict[str, Any]):
 
     # Evaluate spn reconstruction error
     # TODO: this doesn't work well with wandb yet
-    test_val = trainer.test(model=model, dataloaders=val_loader, verbose=True)[0]
-    test_test = trainer.test(model=model, dataloaders=test_loader, verbose=True)[0]
-
+    test_val = trainer.test(model=model, dataloaders=[val_loader, test_loader], verbose=True)
 
     # Save some samples
     if isinstance(model, SpnGenerative):
