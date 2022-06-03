@@ -148,22 +148,6 @@ class SpnGenerative(LitModel):
 
         super().on_train_epoch_end()
 
-    def save_samples(self, samples_dir, num_samples, nrow):
-        """
-        Save samples to a directory.
-
-        Args:
-            samples_dir: Directory to save samples to.
-            num_samples: Number of samples to save.
-            nrow: Number of samples per row.
-
-        """
-        for i in range(5):
-            samples = self.generate_samples(num_samples)
-            grid = torchvision.utils.make_grid(
-                samples.data[:25], nrow=nrow, pad_value=0.0, normalize=True
-            )
-            torchvision.utils.save_image(grid, os.path.join(samples_dir, f"{i}.png"))
 
     def test_step(self, batch, batch_idx, dataloader_id=0):
         data, labels = batch
