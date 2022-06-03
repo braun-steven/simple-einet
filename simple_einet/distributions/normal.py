@@ -94,7 +94,7 @@ class RatNormal(AbstractLeaf):
         )
         self.max_mean = check_valid(max_mean, float, min_mean, allow_none=True)
 
-    def _get_base_distribution(self) -> "CustomNormal":
+    def _get_base_distribution(self, context: SamplingContext = None) -> "CustomNormal":
         if self.min_sigma < self.max_sigma:
             sigma_ratio = torch.sigmoid(self.stds)
             sigma = self.min_sigma + (self.max_sigma - self.min_sigma) * sigma_ratio
