@@ -45,15 +45,13 @@ def main(args, model: SpnGenerative, results_dir, hparams: Dict[str, Any]):
     # Store number of model parameters
     summary = ModelSummary(model, max_depth=-1)
     print(summary)
-    logger_wandb.experiment.config["trainable_parameters"] = get_human_readable_count(
-        summary.trainable_parameters
-    )
-    logger_wandb.experiment.config["trainable_parameters_leaf"] = get_human_readable_count(
-        summary.param_nums[summary.layer_names.index("spn.leaf")]
-    )
-    logger_wandb.experiment.config["trainable_parameters_sums"] = get_human_readable_count(
-        summary.param_nums[summary.layer_names.index("spn.einsum_layers")]
-    )
+    logger_wandb.experiment.config["trainable_parameters"] = summary.trainable_parameters
+    logger_wandb.experiment.config["trainable_parameters_leaf"] = summary.param_nums[
+        summary.layer_names.index("spn.leaf")
+    ]
+    logger_wandb.experiment.config["trainable_parameters_sums"] = summary.param_nums[
+        summary.layer_names.index("spn.einsum_layers")
+    ]
 
     # Create trainer
     gpus = 1 if torch.cuda.is_available() else 0
