@@ -4,20 +4,27 @@ This repository contains code for my personal, simplistic, EinsumNetworks implem
 
 For a speed benchmark comparison against the official EinsumNetworks implementation, check out [benchmark.md](./benchmark/benchmark.md) (short: simple-einet is faster in all dimensions except the input-channel size but scales similar to EinsumNetworks).
 
-## MNIST Samples
-Some samples from the `[0, 1]` class-subset of MNIST [mnist.py](./mnist.py):
+# PyTorch Lightning Training
 
-``` sh
-$ python mnist.py --epochs 5 --batch-size 64 --lr 0.5 -K 10 -D 3 -R 10 --device cuda --train
+The `main_pl.py` script offers PyTorch-Lightning based training for discriminative and generative Einets.
+
+Classification on MNIST examples:
+
+```sh
+$ python main_pl.py --dataset mnist -D 5 -I 50 -R 10 -S 100 --lr 0.01 --dist normal --epochs 100 --classification --gpu 0 --batch-size 1024
 ```
 
-**Samples**
+<img src="./res/mnist_classification.svg" width=400px>
+<img src="./res/mnist_classification_test_results.svg" width=400px>
 
-![MNIST Samples]( ./res/mnist-0-1-samples.png )
 
-**Reconstructions (conditioned on bottom half)**
+Generative learning on MNIST:
 
-![MNIST Reconstructions]( ./res/mnist-0-1-rec.png )
+``` sh
+$ python main_pl.py --dataset mnist -D 5 -I 50 -R 10 -S 100 --lr 0.1 --dist binomial --epochs 10 --gpu 3 --batch-size 128
+```
+
+![MNIST Samples]( ./res/mnist_samples.png )
 
 ## Installation
 
