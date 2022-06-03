@@ -94,6 +94,9 @@ class LitModel(pl.LightningModule, ABC):
     def on_train_start(self) -> None:
         self.rtpt.start()
 
+    def on_train_epoch_end(self) -> None:
+        self.rtpt.step()
+
 
 class SpnGenerative(LitModel):
     def __init__(self, args: Namespace):
