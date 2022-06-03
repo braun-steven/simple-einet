@@ -29,7 +29,7 @@ from simple_einet.distributions.binomial import Binomial
 
 
 # Translate the dataloader index to the dataset name
-DATALOADER_ID_TO_SET_NAME = {0: "val", 1: "test"}
+DATALOADER_ID_TO_SET_NAME = {0: "train", 1: "val", 2: "test"}
 
 
 def make_einet(args, num_classes: int = 1):
