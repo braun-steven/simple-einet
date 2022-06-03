@@ -140,9 +140,9 @@ class SpnGenerative(LitModel):
     def on_train_epoch_end(self):
 
         with torch.no_grad():
-            samples = self.generate_samples(num_samples=25)
+            samples = self.generate_samples(num_samples=64)
             grid = torchvision.utils.make_grid(
-                samples.data[:25], nrow=5, pad_value=0.0, normalize=True
+                samples.data[:64], nrow=8, pad_value=0.0, normalize=True
             )
             self.logger.log_image(key="samples", images=[grid])
 
