@@ -95,7 +95,6 @@ def parse_args():
     parser.add_argument(
         "--seed", type=int, default=1, metavar="S", help="random seed (default: 1)"
     )
-    parser.add_argument("--tag", type=str, help="tag for experiment")
     parser.add_argument(
         "--log-interval",
         type=int,
@@ -145,4 +144,6 @@ def parse_args():
         default=Dist.BINOMIAL,
         help="data distribution",
     )
+    parser.add_argument("--group-tag", type=str, help="tag for group of experiments")
+    parser.add_argument("--tag", type=str, help="tag for experiment")
     return parser.parse_args()
