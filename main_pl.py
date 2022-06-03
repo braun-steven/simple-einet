@@ -28,7 +28,6 @@ from simple_einet.distributions.binomial import Binomial
 
 
 def main(args, model: SpnGenerative, results_dir, hparams: Dict[str, Any]):
-    print(model)
     seed_everything(args.seed, workers=True)
 
     print("Training model...")
