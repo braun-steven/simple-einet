@@ -1,18 +1,35 @@
 import argparse
+import os
+import pathlib
+
+from simple_einet.data import Dist
 
 
 def parse_args():
+
+    home = os.getenv("HOME")
+    data_dir = os.getenv("DATA_DIR", os.path.join(home, "data"))
+    results_dir = os.getenv("RESULTS_DIR", os.path.join(home, "results"))
     parser = argparse.ArgumentParser(description="PyTorch MNIST Example")
+
     parser.add_argument(
-        "--train",
-        action="store_true",
-        help="Run training",
+        "--dataset",
+        required=True,
+        help="Dataset to use for training.",
     )
+    parser.add_argument("--data-dir", default=data_dir, help="path to dataset")
+    parser.add_argument("--results-dir", default=results_dir, help="path to results")
     parser.add_argument(
         "--mixture",
         default=1,
         type=int,
         help="Number of mixture components for an EinetMixture model (if 1 then only an Einet model is used).",
+    )
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=0.1,
+        help="Learning rate",
     )
     parser.add_argument(
         "--batch-size",
@@ -28,15 +45,16 @@ def parse_args():
         metavar="N",
         help="number of bits for each pixel (default: 8)",
     )
+
+    parser.add_argument(
+        "--num-workers", type=int, help="number of data loading workers", default=4
+    )
     parser.add_argument(
         "--epochs",
         type=int,
         default=14,
         metavar="N",
         help="number of epochs to train (default: 14)",
-    )
-    parser.add_argument(
-        "--lr", type=float, default=1.0, metavar="LR", help="learning rate (default: 1.0)"
     )
     parser.add_argument(
         "--temperature-leaves",
@@ -51,21 +69,39 @@ def parse_args():
         help="Temperature for sum weights during sampling.",
     )
     parser.add_argument(
-        "--dry-run", action="store_true", default=False, help="quickly check a single pass"
+        "--dropout",
+        type=float,
+        default=0.0,
+        help="Dropout probability.",
     )
-    parser.add_argument("--seed", type=int, default=1, metavar="S", help="random seed (default: 1)")
+    parser.add_argument(
+        "--min-sigma",
+        type=float,
+        default=1e-2,
+        help="Normal distribution min sigma value.",
+    )
+    parser.add_argument(
+        "--max-sigma",
+        type=float,
+        default=2.0,
+        help="Normal distribution min sigma value.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="quickly check a single pass",
+    )
+    parser.add_argument(
+        "--seed", type=int, default=1, metavar="S", help="random seed (default: 1)"
+    )
+    parser.add_argument("--tag", type=str, help="tag for experiment")
     parser.add_argument(
         "--log-interval",
         type=int,
         default=10,
         metavar="N",
         help="how many batches to wait before logging training status",
-    )
-    parser.add_argument(
-        "--save-model",
-        action="store_true",
-        default=False,
-        help="For Saving the current Model",
     )
 
     parser.add_argument(
@@ -86,13 +122,27 @@ def parse_args():
         action="store_true",
         help="Debug flag (less data, fewer iterations)",
     )
-    parser.add_argument(
-        "--dataset",
-        default="mnist",
-        help="Dataset",
-    )
-    parser.add_argument("-I", type=int, default=10)
-    parser.add_argument("-S", type=int, default=10)
+    parser.add_argument("-S", type=int, default=10, help="Number of output sum nodes in each layer.")
+    parser.add_argument("-I", type=int, default=10, help="Number of distributions for each RV.")
     parser.add_argument("-D", type=int, default=3)
     parser.add_argument("-R", type=int, default=1)
+    parser.add_argument("--gpu", type=int, help="GPU device id.")
+
+    parser.add_argument(
+        "--load-and-eval",
+        default=None,
+        type=pathlib.Path,
+        help="path to a result directory with a "
+        "model and stored args. if set, "
+        "training is skipped and model is "
+        "evaluated",
+    )
+    parser.add_argument("--cp", action="store_true", help="Use crossproduct in einsum layer")
+    parser.add_argument(
+        "--dist",
+        type=Dist,
+        choices=list(Dist),
+        default=Dist.BINOMIAL,
+        help="data distribution",
+    )
     return parser.parse_args()

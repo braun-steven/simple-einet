@@ -1,63 +1,52 @@
-#!/usr/bin/env python3
-
-import logging
+import itertools
 import random
-import numpy as np
-import datetime
-from torch.utils.data.sampler import Sampler
-import math
-from torch.utils.data import DataLoader, Dataset
-from torchvision.datasets import CIFAR10, CelebA, LSUN, MNIST, SVHN
-import torch
 import os
-from torchvision import datasets, transforms
-from typing import List, Optional, Tuple
+import math
+import logging
+from dataclasses import dataclass
+from enum import Enum
+from typing import Optional, Tuple
 
-from torchvision.datasets.mnist import FashionMNIST
+import torch
+import torchvision.transforms as transforms
+from torch.utils.data import DataLoader, Dataset, random_split
+from torch.utils.data.distributed import DistributedSampler
+from torch.utils.data.sampler import Sampler
+from torchvision.datasets import CIFAR10, MNIST, SVHN, CelebA, FashionMNIST, LSUN
+from torchvision.transforms.functional import InterpolationMode
 
-logger = logging.getLogger(__name__)
-
-
-def get_mnist(digits: List[int], batch_size: int, test_batch_size: int, debug=False):
-    train_kwargs = {"batch_size": batch_size}
-    test_kwargs = {"batch_size": test_batch_size}
-
-    transform = transforms.Compose([transforms.ToTensor()])
-    data_dir = os.path.join("~", "data")
-    dataset_train = datasets.MNIST(data_dir, train=True, download=True, transform=transform)
-    dataset_test = datasets.MNIST(data_dir, train=False, transform=transform)
-    train_loader = torch.utils.data.DataLoader(dataset_train, **train_kwargs)
-    test_loader = torch.utils.data.DataLoader(dataset_test, **test_kwargs)
-
-    mask = torch.zeros_like(train_loader.dataset.targets).bool()
-    for digit in digits:
-        mask = mask | (train_loader.dataset.targets == digit)
-
-    train_loader.dataset.data = train_loader.dataset.data[mask]
-    train_loader.dataset.targets = train_loader.dataset.targets[mask]
-    mask = torch.zeros_like(test_loader.dataset.targets).bool()
-    for digit in digits:
-        mask = mask | (test_loader.dataset.targets == digit)
-    test_loader.dataset.data = test_loader.dataset.data[mask]
-    test_loader.dataset.targets = test_loader.dataset.targets[mask]
-
-    if debug:
-        train_loader.dataset.data = train_loader.dataset.data[:500]
-        train_loader.dataset.targets = train_loader.dataset.targets[:500]
-        test_loader.dataset.data = test_loader.dataset.data[:500]
-        test_loader.dataset.targets = test_loader.dataset.targets[:500]
-
-    return train_loader, test_loader
+from simple_einet.distributions import RatNormal
+from simple_einet.distributions.binomial import Binomial
 
 
-def colorize_mnist(images):
-    images = images.expand((3, -1, -1))
-    cs = torch.rand(3, 1, 1) * 0.7 + 0.3
-    images_colored = images * cs
-    return images_colored
+@dataclass
+class Shape:
+    channels: int  # Number of channels
+    height: int  # Height in pixels
+    width: int  # Width in pixels
+
+    def __iter__(self):
+        for element in [self.channels, self.height, self.width]:
+            yield element
+
+    def __getitem__(self, index: int):
+        return [self.channels, self.height, self.width][index]
+
+    def downscale(self, scale):
+        """Downscale this shape by the given scale. Only changes height/width."""
+        return Shape(self.channels, round(self.height / scale), round(self.width / scale))
+
+    def upscale(self, scale):
+        """Upscale this shape by the given scale. Only changes height/width."""
+        return Shape(self.channels, round(self.height * scale), round(self.width * scale))
+
+    @property
+    def num_pixels(self):
+        return self.width * self.height
 
 
-def get_data_shape(dataset_name: str) -> Tuple[int, int, int]:
+
+def get_data_shape(dataset_name: str) -> Shape:
     """Get the expected data shape.
 
     Args:
@@ -66,183 +55,231 @@ def get_data_shape(dataset_name: str) -> Tuple[int, int, int]:
     Returns:
         Tuple[int, int, int]: Tuple of [channels, height, width].
     """
-    return {
-        "mnist": (1, 28, 28),
-        "fmnist": (1, 28, 28),
-        "cmnist": (3, 28, 28),
-        "cifar": (3, 32, 32),
-        "svhn": (3, 32, 32),
-        "lsun-bedroom": (3, 64, 64),
-        "lsun-tower": (3, 64, 64),
-        "lsun-church-outdoor": (3, 64, 64),
-        "celeba": (3, 128, 128),
-        "celeba-small": (3, 64, 64),
-    }[dataset_name]
+    return Shape(
+        *{
+            "mnist": (1, 32, 32),
+            "mnist-28": (1, 28, 28),
+            "fmnist": (1, 32, 32),
+            "fmnist-28": (1, 28, 28),
+            "cifar": (3, 32, 32),
+            "svhn": (3, 32, 32),
+            "celeba": (3, 64, 64),
+            "celeba-small": (3, 64, 64),
+            "celeba-tiny": (3, 32, 32),
+        }[dataset_name]
+    )
 
 
-def get_dataset(dataset_name: str, data_dir: str, train: bool) -> Dataset:
+def get_datasets(args, normalize: bool) -> Tuple[Dataset, Dataset, Dataset]:
     """
     Get the specified dataset.
 
     Args:
-      train: Flag for train (true) or test (false) split.
+      args: Args.
+      normalize: Normalize the dataset.
 
     Returns:
         Dataset: Dataset.
     """
 
+    # Get dataset name
+    dataset_name: str = args.dataset
+
     # Get the image size (assumes quadratic images)
-    image_size = get_data_shape(dataset_name)[-1]
+    shape = get_data_shape(dataset_name)
 
     # Compose image transformations
     transform = transforms.Compose(
         [
-            transforms.Resize(image_size),
-            transforms.CenterCrop(image_size),
-            transforms.RandomHorizontalFlip(),
+            transforms.Resize(
+                size=(shape.height, shape.width),
+            ),
             transforms.ToTensor(),
         ]
     )
 
-    kwargs = dict(root=data_dir, download=True, transform=transform)
+    kwargs = dict(root=args.data_dir, download=True, transform=transform)
 
     # Select the datasets
-    if dataset_name == "mnist":
-        transform.transforms.pop(2)  # Remove hflip
-        dataset = MNIST(**kwargs, train=train)
+    if dataset_name == "mnist" or dataset_name == "mnist-28":
+        if normalize:
+            transform.transforms.append(transforms.Normalize([0.5], [0.5]))
 
-        # digits = [2]
-        # mask = torch.zeros_like(dataset.targets).bool()
-        # for digit in digits:
-        #     mask = mask | (dataset.targets == digit)
+        dataset_train = MNIST(**kwargs, train=True)
 
-        # dataset.data = dataset.data[mask]
-        # dataset.targets = dataset.targets[mask]
+        dataset_test = MNIST(**kwargs, train=False)
 
-    elif dataset_name == "cmnist":
-        transform.transforms.pop(2)  # Remove hflip
-        transform.transforms.append(transforms.Lambda(colorize_mnist))
-        dataset = MNIST(**kwargs, train=train)
+        # for dataset in [dataset_train, dataset_test]:
+        #     digits = [0, 1]
+        #     mask = torch.zeros_like(dataset.targets).bool()
+        #     for digit in digits:
+        #         mask = mask | (dataset.targets == digit)
 
-    elif dataset_name == "fmnist":
-        transform.transforms.pop(2)  # Remove hflip
-        dataset = FashionMNIST(**kwargs, train=train)
+        #     dataset.data = dataset.data[mask]
+        #     dataset.targets = dataset.targets[mask]
 
-    elif dataset_name == "celeba":
-        dataset = CelebA(**kwargs, split="train" if train else "test")
+        N = len(dataset_train.data)
+        N_train = round(N * 0.9)
+        N_val = N - N_train
+        lenghts = [N_train, N_val]
+        dataset_train, dataset_val = random_split(dataset_train, lengths=lenghts)
 
-    elif dataset_name == "celeba-small":
-        # Automatically resized to 64x64 in transform
-        dataset = CelebA(**kwargs, split="train" if train else "test")
+    elif dataset_name == "fmnist" or dataset_name == "fmnist-28":
+        if normalize:
+            transform.transforms.append(transforms.Normalize([0.5], [0.5]))
+
+        dataset_train = FashionMNIST(**kwargs, train=True)
+
+        dataset_test = FashionMNIST(**kwargs, train=False)
+
+        N = len(dataset_train.data)
+        N_train = round(N * 0.9)
+        N_val = N - N_train
+        lenghts = [N_train, N_val]
+        dataset_train, dataset_val = random_split(dataset_train, lengths=lenghts)
+
+    elif "celeba" in dataset_name:
+        if normalize:
+            transform.transforms.append(transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)))
+
+        dataset_train = CelebA(**kwargs, split="train")
+        dataset_val = CelebA(**kwargs, split="valid")
+        dataset_test = CelebA(**kwargs, split="test")
 
     elif dataset_name == "cifar":
+        if normalize:
+            transform.transforms.append(transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]))
+        dataset_train = CIFAR10(**kwargs, train=True)
 
-        transform = transforms.Compose(
-            [
-                transforms.Resize(image_size),
-                transforms.Pad(int(math.ceil(image_size * 0.04)), padding_mode="edge"),
-                transforms.RandomAffine(degrees=0, translate=(0.04, 0.04)),
-                transforms.CenterCrop(image_size),
-                transforms.RandomHorizontalFlip(),
-                transforms.ToTensor(),
-            ]
-        )
-
-        kwargs = dict(root=data_dir, download=True, transform=transform)
-
-        dataset = CIFAR10(**kwargs, train=train)
+        N = len(dataset_train.data)
+        N_train = round(N * 0.9)
+        N_val = N - N_train
+        lenghts = [N_train, N_val]
+        dataset_train, dataset_val = random_split(dataset_train, lengths=lenghts)
+        dataset_test = CIFAR10(**kwargs, train=False)
 
     elif dataset_name == "svhn":
+        if normalize:
+            transform.transforms.append(transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]))
 
-        dataset = SVHN(**kwargs, split="train" if train else "test")
+        dataset_train = SVHN(**kwargs, split="train")
 
-    elif dataset_name.startswith("lsun"):
-        transform = transforms.Compose(
-            [
-                transforms.Resize(96),
-                transforms.Pad(int(math.ceil(96 * 0.04)), padding_mode="edge"),
-                transforms.RandomAffine(degrees=0, translate=(0.04, 0.04)),
-                transforms.CenterCrop(64),
-                transforms.RandomHorizontalFlip(),
-                transforms.ToTensor(),
-            ]
-        )
-
-        kwargs = dict(root=data_dir, download=True, transform=transform)
-
-        if dataset_name == "lsun-bedroom":
-            classes = "bedroom"
-        elif dataset_name == "lsun-church-outdoor":
-            classes = "church_outdoor"
-        elif dataset_name == "lsun-tower":
-            classes = "tower"
-
-        if train:
-            classes += "_train"
-        else:
-            classes += "_val"
-
-        kwargs = dict(root=data_dir, transform=transform)
-
-        # download_and_unzip_maybe(out_dir=data_dir, set_name=classes)
-        dataset = LSUN(**kwargs, classes=[classes])
+        N = len(dataset_train.data)
+        lenghts = [round(N * 0.9), round(N * 0.1)]
+        dataset_train, dataset_val = random_split(dataset_train, lengths=lenghts)
+        dataset_test = SVHN(**kwargs, split="test")
 
     else:
         raise Exception(f"Unknown dataset: {dataset_name}")
 
-    return dataset
+    return dataset_train, dataset_val, dataset_test
 
 
 def build_dataloader(
-    dataset_name: str, batch_size, batch_size_test, data_dir: str
-) -> Tuple[DataLoader, DataLoader]:
+    args, loop: bool, normalize: bool
+) -> Tuple[DataLoader, DataLoader, DataLoader]:
     # Get dataset objects
-    trainset = get_dataset(dataset_name, data_dir, train=True)
-    testset = get_dataset(dataset_name, data_dir, train=False)
+    dataset_train, dataset_val, dataset_test = get_datasets(args, normalize=normalize)
 
     # Build data loader
-    trainloader = _make_loader(trainset, batch_size=batch_size)
-    testloader = _make_loader(testset, batch_size=batch_size_test)
-    return trainloader, testloader
+    loader_train = _make_loader(args, dataset_train, loop=loop, shuffle=True)
+    loader_val = _make_loader(args, dataset_val, loop=loop, shuffle=False)
+    loader_test = _make_loader(args, dataset_test, loop=loop, shuffle=False)
+    return loader_train, loader_val, loader_test
 
 
-def _make_loader(dataset: Dataset, batch_size: int) -> DataLoader:
+def _make_loader(args, dataset: Dataset, loop: bool, shuffle: bool) -> DataLoader:
+    if loop:
+        sampler = TrainingSampler(size=len(dataset))
+    else:
+        sampler = None
+
+    from exp_utils import worker_init_reset_seed
+
     return DataLoader(
         dataset,
-        shuffle=True,
-        batch_size=batch_size,
-        num_workers=1,
+        shuffle=(sampler is None) and shuffle,
+        sampler=sampler,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
         pin_memory=True,
         drop_last=False,
         worker_init_fn=worker_init_reset_seed,
     )
 
 
-def worker_init_reset_seed(worker_id: int):
-    """Initialize the worker by settign a seed depending on the worker id.
+class TrainingSampler(Sampler):
+    """
+    In training, we only care about the "infinite stream" of training data.
+    So this sampler produces an infinite stream of indices and
+    all workers cooperate to correctly shuffle the indices and sample different indices.
+
+    The samplers in each worker effectively produces `indices[worker_id::num_workers]`
+    where `indices` is an infinite stream of indices consisting of
+    `shuffle(range(size)) + shuffle(range(size)) + ...` (if shuffle is True)
+    or `range(size) + range(size) + ...` (if shuffle is False)
+    """
+
+    def __init__(self, size: int, shuffle: bool = True, seed: Optional[int] = None):
+        """
+        Args:
+            size (int): the total number of data of the underlying dataset to sample from
+            shuffle (bool): whether to shuffle the indices or not
+            seed (int): the initial seed of the shuffle. Must be the same
+                across all workers. If None, will use a random seed shared
+                among workers (require synchronization among all workers).
+        """
+        self._size = size
+        assert size > 0
+        self._shuffle = shuffle
+        if seed is None:
+            seed = 0
+        self._seed = int(seed)
+
+        self._rank = 0
+        self._world_size = 1
+
+    def __iter__(self):
+        start = self._rank
+        yield from itertools.islice(self._infinite_indices(), start, None, self._world_size)
+
+    def _infinite_indices(self):
+        g = torch.Generator()
+        g.manual_seed(self._seed)
+        while True:
+            if self._shuffle:
+                yield from torch.randperm(self._size, generator=g).tolist()
+            else:
+                yield from torch.arange(self._size).tolist()
+
+
+class Dist(str, Enum):
+    """Enum for the distribution of the data."""
+
+    NORMAL = "normal"
+    BINOMIAL = "binomial"
+
+
+def get_distribution(dist, min_sigma, max_sigma):
+    """
+    Get the distribution for the leaves.
 
     Args:
-        worker_id (int): Unique worker id.
-    """
-    initial_seed = torch.initial_seed() % 2 ** 31
-    seed_all_rng(initial_seed + worker_id)
+        dist: The distribution to use.
+        min_sigma: The minimum sigma for the leaves.
+        max_sigma: The maximum sigma for the leaves.
 
+    Returns:
+        leaf_type: The type of the leaves.
+        leaf_kwargs: The kwargs for the leaves.
 
-def seed_all_rng(seed=None):
     """
-    Set the random seed for the RNG in torch, numpy and python.
-
-    Args:
-        seed (int): if None, will use a strong random seed.
-    """
-    if seed is None:
-        seed = (
-            os.getpid()
-            + int(datetime.now().strftime("%S%f"))
-            + int.from_bytes(os.urandom(2), "big")
-        )
-        logger.info("Using a generated random seed {}".format(seed))
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    random.seed(seed)
-    os.environ["PYTHONHASHSEED"] = str(seed)
+    if dist == Dist.NORMAL:
+        leaf_type = RatNormal
+        leaf_kwargs = {"min_sigma": min_sigma, "max_sigma": max_sigma}
+    elif dist == Dist.BINOMIAL:
+        leaf_type = Binomial
+        leaf_kwargs = {"total_count": 2**8 - 1}
+    else:
+        raise ValueError("dist must be either normal or binomial")
+    return leaf_kwargs, leaf_type

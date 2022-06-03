@@ -2,7 +2,7 @@ from typing import List
 import torch
 import numpy as np
 
-from simple_einet.utils import SamplingContext
+from simple_einet.utils import SamplingContext, index_one_hot
 from simple_einet.layers import AbstractLayer
 from simple_einet.distributions import AbstractLeaf
 
@@ -19,7 +19,13 @@ class FactorizedLeaf(AbstractLayer):
 
     """
 
-    def __init__(self, num_features: int, num_features_out: int, num_repetitions, base_leaf: AbstractLeaf):
+    def __init__(
+        self,
+        num_features: int,
+        num_features_out: int,
+        num_repetitions,
+        base_leaf: AbstractLeaf,
+    ):
         """
         Args:
             in_features (int): Number of input features/RVs.
@@ -59,10 +65,17 @@ class FactorizedLeaf(AbstractLayer):
         # Merge scopes by naive factorization
         x = torch.einsum("bicr,ior->bocr", x, self.scopes)
 
-        assert x.shape == (x.shape[0], self.num_features_out, self.base_leaf.num_leaves, self.num_repetitions)
+        assert x.shape == (
+            x.shape[0],
+            self.num_features_out,
+            self.base_leaf.num_leaves,
+            self.num_repetitions,
+        )
         return x
 
-    def sample(self, num_samples: int = None, context: SamplingContext = None) -> torch.Tensor:
+    def sample(
+        self, num_samples: int = None, context: SamplingContext = None
+    ) -> torch.Tensor:
         # Save original indices_out and set context indices_out to none, such that the out_channel
         # are not filtered in the base_leaf sampling procedure
         indices_out = context.indices_out
@@ -88,13 +101,42 @@ class FactorizedLeaf(AbstractLayer):
                 self.base_leaf.num_leaves,
             )
 
-        scopes = self.scopes[..., context.indices_repetition].permute(2, 0, 1)
-        rnge_in = torch.arange(self.num_features_out, device=samples.device)
-        scopes = (scopes * rnge_in).sum(-1).long()
-        indices_in_gather = indices_out.gather(dim=1, index=scopes)
-        indices_in_gather = indices_in_gather.view(num_samples, 1, -1, 1).expand(-1, samples.shape[1], -1, -1)
-        samples = samples.gather(dim=-1, index=indices_in_gather)
-        samples.squeeze_(-1)  # Remove num_leaves dimension
+        if not context.is_differentiable:
+            scopes = self.scopes[..., context.indices_repetition].permute(2, 0, 1)
+            rnge_in = torch.arange(self.num_features_out, device=samples.device)
+            scopes = (scopes * rnge_in).sum(-1).long()
+            indices_in_gather = indices_out.gather(dim=1, index=scopes)
+            indices_in_gather = indices_in_gather.view(num_samples, 1, -1, 1)
+
+            indices_in_gather = indices_in_gather.expand(-1, samples.shape[1], -1, -1)
+            samples = samples.gather(dim=-1, index=indices_in_gather)
+            samples.squeeze_(-1)  # Remove num_leaves dimension
+        else:
+            # i_rep = context.indices_repetition.argmax(-1).long()
+            # i_out = indices_out.argmax(-1).long()
+            # scopes_orig = self.scopes[..., i_rep].permute(2, 0, 1)
+            # rnge_in = torch.arange(self.num_features_out, device=samples.device)
+            # scopes_orig = (scopes_orig * rnge_in).sum(-1).long()
+            # indices_in_gather_orig = i_out.gather(dim=1, index=scopes_orig)
+            # indices_in_gather_orig = indices_in_gather_orig.view(num_samples, 1, -1, 1)
+            #
+            # indices_in_gather_orig = indices_in_gather_orig.expand(-1, samples.shape[1], -1, -1)
+            # samples_orig = samples.gather(dim=-1, index=indices_in_gather_orig)
+            # samples_orig.squeeze_(-1)  # Remove num_leaves dimension
+
+
+            scopes = self.scopes.unsqueeze(0)  # make space for batch dim
+            r_idx = context.indices_repetition.view(context.num_samples, 1, 1, -1)
+            scopes = index_one_hot(scopes, index=r_idx, dim=-1)
+
+            indices_in = index_one_hot(
+                indices_out.unsqueeze(1), index=scopes.unsqueeze(-1), dim=2
+            )
+
+            indices_in = indices_in.unsqueeze(1)  # make space for channel dim
+            samples = index_one_hot(samples, index=indices_in, dim=-1)
+
+            # assert (samples - samples_orig).sum() < 1e-4
 
         return samples
 

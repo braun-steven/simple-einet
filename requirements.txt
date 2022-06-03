@@ -1,3 +1,12 @@
-numpy>=1.20.1
-# torch>=1.10.0
-# torchvision>=0.11.1
+fast_pytorch_kmeans==0.1.6
+icecream==2.1.2
+matplotlib==3.5.1
+numpy==1.22.3
+Pillow==9.1.1
+pytorch_lightning==1.6.1
+rich==12.4.4
+rtpt==0.0.4
+scipy==1.8.0
+torch==1.11.0
+torchvision==0.12.0
+tqdm==4.62.3
