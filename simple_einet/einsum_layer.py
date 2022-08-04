@@ -9,8 +9,7 @@ from simple_einet.layers import AbstractLayer
 from simple_einet.type_checks import check_valid
 from simple_einet.utils import SamplingContext, index_one_hot, diff_sample_one_hot
 
-
-class SumProdLayer(AbstractLayer):
+class LinsumLayer(AbstractLayer):
     def __init__(
         self,
         num_features: int,
@@ -30,13 +29,7 @@ class SumProdLayer(AbstractLayer):
         )
         self._pad = 0
 
-        # Weights, such that each sumnode has its own weights
-        ws = torch.randn(
-            self.num_features // cardinality,
-            self.num_sums_in,
-            self.num_sums_out,
-            self.num_repetitions,
-        )
+        ws = self._init_weights()
 
         self.weights = nn.Parameter(ws)
 
@@ -55,6 +48,20 @@ class SumProdLayer(AbstractLayer):
             f"(N, {self.num_features_out}, {self.num_sums_out}, {self.num_repetitions})"
         )
 
+    def _init_weights(self):
+        # Weights, such that each sumnode has its own weights
+        ws = torch.randn(
+            self.num_features // self.cardinality,
+            self.num_sums_in,
+            self.num_sums_out,
+            self.num_repetitions,
+        )
+        return ws
+
+    def _get_normalized_log_weights(self):
+        return F.log_softmax(self.weights, dim=1)
+
+
     def forward(self, x: torch.Tensor):
         """
         Einsum layer forward pass.
@@ -66,7 +73,6 @@ class SumProdLayer(AbstractLayer):
             torch.Tensor: Output of shape [batch, ceil(in_features/2), channel * channel].
         """
 
-
         # Dimensions
         N, D, C, R = x.size()
         D_out = D // 2
@@ -75,8 +81,7 @@ class SumProdLayer(AbstractLayer):
         left = x[:, 0::2]
         right = x[:, 1::2]
 
-
-        prod_output = (left + right).unsqueeze(3)
+        prod_output = (left + right).unsqueeze(3)  # N x D/2 x Sin x 1 x R
 
         # Apply dropout: Set random sum node children to 0 (-inf in log domain)
         if self.dropout > 0.0 and self.training:
@@ -84,8 +89,12 @@ class SumProdLayer(AbstractLayer):
             # TODO: this isn't allow, right? maybe add zeros with ninf at mask
             prod_output[dropout_indices] = np.NINF
 
-        log_weights = F.log_softmax(self.weights, dim=1).unsqueeze(0)
-        prob = torch.logsumexp(prod_output + log_weights, dim=2)
+        # Get log weights
+        log_weights = self._get_normalized_log_weights().unsqueeze(0)
+        # log_weights = F.log_softmax(self.weights, dim=1).unsqueeze(
+        #     0
+        # )  # 1 x D/2 x Sin x Sout x R
+        prob = torch.logsumexp(prod_output + log_weights, dim=2)  # N x D/2 x Sout x R
 
         # Save input if input cache is enabled
         if self._is_input_cache_enabled:
@@ -119,11 +128,11 @@ class SumProdLayer(AbstractLayer):
             p_idxs = context.indices_out[
                 ..., None, None, None
             ]  # make space for repetition dim
-            p_idxs = p_idxs.expand(
-                -1, -1, in_channels, -1, num_repetitions
-            )
+            p_idxs = p_idxs.expand(-1, -1, in_channels, -1, num_repetitions)
             weights = weights.gather(dim=3, index=p_idxs)  # index out_channels
-            weights = weights.squeeze(3)  # squeeze out_channels dimension (is 1 at this point)
+            weights = weights.squeeze(
+                3
+            )  # squeeze out_channels dimension (is 1 at this point)
 
             # Index repetitions
             r_idxs = context.indices_repetition[..., None, None, None]
@@ -180,12 +189,12 @@ class SumProdLayer(AbstractLayer):
                 r_idxs = r_idxs.expand(-1, out_features, in_channels, -1)
                 lls_left = (
                     self._input_cache_left.gather(index=r_idxs, dim=-1)
-                        .squeeze(-1)
+                    .squeeze(-1)
                     .unsqueeze(3)
                 )
                 lls_right = (
                     self._input_cache_right.gather(index=r_idxs, dim=-1)
-                        .squeeze(-1)
+                    .squeeze(-1)
                     .unsqueeze(2)
                 )
 
@@ -256,12 +265,32 @@ class SumProdLayer(AbstractLayer):
         self._input_cache_right = None
 
     def extra_repr(self):
-        return "num_features={}, num_sums_in={}, num_sums_out={}, out_shape={}".format(
-            self.num_features,
+        return (
+            "num_features={}, num_sums_in={}, num_sums_out={}, out_shape={}, "
+            "weights_shape={}".format(
+                self.num_features,
+                self.num_sums_in,
+                self.num_sums_out,
+                self.out_shape,
+                self.weights.shape,
+            )
+        )
+
+
+class LinsumLayerLogWeights(LinsumLayer):
+    def _init_weights(self):
+        # Weights, such that each sumnode has its own weights
+        log_weights = torch.rand(
+            self.num_features // self.cardinality,
             self.num_sums_in,
             self.num_sums_out,
-            self.out_shape,
-        )
+            self.num_repetitions,
+            ).log()
+        return log_weights
+
+    def _get_normalized_log_weights(self):
+        log_weights = self.weights - self.weights.logsumexp(dim=1, keepdim=True)
+        return log_weights
 
 class EinsumLayer(AbstractLayer):
     def __init__(
@@ -295,7 +324,8 @@ class EinsumLayer(AbstractLayer):
         self.weights = nn.Parameter(ws)
 
         # Create index map from flattened to coordinates (only needed in sampling)
-        self.unraveled_channel_indices = nn.Parameter(
+        self.register_buffer(
+            "unraveled_channel_indices",
             torch.tensor(
                 [
                     (i, j)
@@ -303,25 +333,25 @@ class EinsumLayer(AbstractLayer):
                     for j in range(self.num_sums_in)
                 ]
             ),
-            requires_grad=False,
         )
 
         # Create index map from flattened to coordinates (only needed in differentiable sampling)
-        self.unraveled_channel_indices_oh_0 = nn.Parameter(
+        self.register_buffer(
+            "unraveled_channel_indices_oh_0",
             torch.nn.functional.one_hot(
                 torch.arange(self.num_sums_in).repeat_interleave(self.num_sums_in)
             )
             .unsqueeze(0)
             .unsqueeze(0),
-            requires_grad=False,
         )
-        self.unraveled_channel_indices_oh_1 = nn.Parameter(
+
+        self.register_buffer(
+            "unraveled_channel_indices_oh_1",
             torch.nn.functional.one_hot(
                 torch.arange(self.num_sums_in).repeat(self.num_sums_in)
             )
             .unsqueeze(0)
             .unsqueeze(0),
-            requires_grad=False,
         )
 
         # Dropout
@@ -476,12 +506,12 @@ class EinsumLayer(AbstractLayer):
                 r_idxs = r_idxs.expand(-1, out_features, in_channels, -1)
                 lls_left = (
                     self._input_cache_left.gather(index=r_idxs, dim=-1)
-                        .squeeze(-1)
+                    .squeeze(-1)
                     .unsqueeze(3)
                 )
                 lls_right = (
                     self._input_cache_right.gather(index=r_idxs, dim=-1)
-                        .squeeze(-1)
+                    .squeeze(-1)
                     .unsqueeze(2)
                 )
 
@@ -551,11 +581,15 @@ class EinsumLayer(AbstractLayer):
         self._input_cache_right = None
 
     def extra_repr(self):
-        return "num_features={}, num_sums_in={}, num_sums_out={}, out_shape={}".format(
-            self.num_features,
-            self.num_sums_in,
-            self.num_sums_out,
-            self.out_shape,
+        return (
+            "num_features={}, num_sums_in={}, num_sums_out={}, out_shape={}, "
+            "weights_shape={}".format(
+                self.num_features,
+                self.num_sums_in,
+                self.num_sums_out,
+                self.out_shape,
+                self.weights.shape,
+            )
         )
 
 

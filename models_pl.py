@@ -4,6 +4,7 @@ import os
 from argparse import Namespace
 from typing import Dict, Any, Tuple
 import numpy as np
+from omegaconf import DictConfig
 
 import torch
 from torch import nn
@@ -17,7 +18,6 @@ from torch.nn import functional as F
 from args import parse_args
 from simple_einet.data import get_data_shape, Dist, get_distribution
 from exp_utils import (
-    setup_experiment_lit,
     load_from_checkpoint,
 )
 from pytorch_lightning import seed_everything
@@ -32,61 +32,62 @@ from simple_einet.distributions.binomial import Binomial
 DATALOADER_ID_TO_SET_NAME = {0: "train", 1: "val", 2: "test"}
 
 
-def make_einet(args, num_classes: int = 1):
+def make_einet(cfg, num_classes: int = 1):
     """
     Make an EinsumNetworks model based off the given arguments.
 
     Args:
-        args: Arguments parsed from argparse.
+        cfg: Arguments parsed from argparse.
 
     Returns:
         EinsumNetworks model.
     """
-    image_shape = get_data_shape(args.dataset)
+    image_shape = get_data_shape(cfg.dataset)
     # leaf_kwargs, leaf_type = {"total_count": 255}, Binomial
     leaf_kwargs, leaf_type = get_distribution(
-        dist=args.dist, min_sigma=args.min_sigma, max_sigma=args.max_sigma
+        dist=cfg.dist, min_sigma=cfg.min_sigma, max_sigma=cfg.max_sigma
     )
 
     config = EinetConfig(
         num_features=image_shape.num_pixels,
         num_channels=image_shape.channels,
-        depth=args.D,
-        num_sums=args.S,
-        num_leaves=args.I,
-        num_repetitions=args.R,
+        depth=cfg.D,
+        num_sums=cfg.S,
+        num_leaves=cfg.I,
+        num_repetitions=cfg.R,
         num_classes=num_classes,
         leaf_kwargs=leaf_kwargs,
         leaf_type=leaf_type,
-        dropout=args.dropout,
-        cross_product=args.cp,
+        dropout=cfg.dropout,
+        cross_product=cfg.cp,
+        log_weights=cfg.log_weights,
     )
     return Einet(config)
 
 
 class LitModel(pl.LightningModule, ABC):
-    def __init__(self, args: argparse.Namespace, name: str) -> None:
+    def __init__(self, cfg: DictConfig, name: str) -> None:
         super().__init__()
-        self.args = args
-        self.image_shape = get_data_shape(args.dataset)
+        self.cfg = cfg
+        self.image_shape = get_data_shape(cfg.dataset)
         self.rtpt = RTPT(
             name_initials="SL",
-            experiment_name="einet_" + name + ("_" + str(args.tag) if args.tag else ""),
-            max_iterations=args.epochs + 1,
+            experiment_name="einet_" + name + ("_" + str(cfg.tag) if cfg.tag else ""),
+            max_iterations=cfg.epochs + 1,
         )
         self.save_hyperparameters()
 
     def preprocess(self, data: torch.Tensor):
-        if self.args.dist == Dist.BINOMIAL:
+        if self.cfg.dist == Dist.BINOMIAL:
             data *= 255.0
 
         return data
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.args.lr)
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.cfg.lr)
         lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(
             optimizer,
-            milestones=[int(0.7 * self.args.epochs), int(0.9 * self.args.epochs)],
+            milestones=[int(0.7 * self.cfg.epochs), int(0.9 * self.cfg.epochs)],
             gamma=0.1,
         )
         return [optimizer], [lr_scheduler]
@@ -99,22 +100,22 @@ class LitModel(pl.LightningModule, ABC):
 
 
 class SpnGenerative(LitModel):
-    def __init__(self, args: Namespace):
-        super().__init__(args=args, name="gen")
-        self.spn = make_einet(args)
+    def __init__(self, cfg: DictConfig):
+        super().__init__(cfg=cfg, name="gen")
+        self.spn = make_einet(cfg)
 
     def training_step(self, train_batch, batch_idx):
         data, labels = train_batch
         data = self.preprocess(data)
         nll = self.negative_log_likelihood(data)
-        self.log("Train/nll", nll)
+        self.log("Train/loss", nll)
         return nll
 
     def validation_step(self, val_batch, batch_idx):
         data, labels = val_batch
         data = self.preprocess(data)
         nll = self.negative_log_likelihood(data)
-        self.log("Val/nll", nll)
+        self.log("Val/loss", nll)
         return nll
 
     def negative_log_likelihood(self, data):
@@ -148,7 +149,6 @@ class SpnGenerative(LitModel):
 
         super().on_train_epoch_end()
 
-
     def test_step(self, batch, batch_idx, dataloader_id=0):
         data, labels = batch
 
@@ -163,34 +163,36 @@ class SpnDiscriminative(LitModel):
     """
     Discriminative SPN model. Models the class conditional data distribution at its C root nodes.
     """
-    def __init__(self, args: Namespace):
-        super().__init__(args, name="disc")
+
+    def __init__(self, cfg: DictConfig):
+        super().__init__(cfg, name="disc")
 
         # Construct SPN
-        self.spn = make_einet(args, num_classes=10)
+        self.spn = make_einet(cfg, num_classes=10)
 
         # Define loss function
-        self.criterion = nn.CrossEntropyLoss()
+        self.criterion = nn.NLLLoss()
 
     def training_step(self, train_batch, batch_idx):
         loss, accuracy = self._get_cross_entropy_and_accuracy(train_batch)
         self.log("Train/accuracy", accuracy, prog_bar=True)
-        self.log("Train/cross_entropy", loss)
+        self.log("Train/loss", loss)
         return loss
 
     def validation_step(self, val_batch, batch_idx):
         loss, accuracy = self._get_cross_entropy_and_accuracy(val_batch)
-        self.log("Val/cross_entropy", loss)
         self.log("Val/accuracy", accuracy)
+        self.log("Val/loss", loss)
         return loss
 
     def test_step(self, batch, batch_idx, dataloader_id=0):
         loss, accuracy = self._get_cross_entropy_and_accuracy(batch)
         set_name = DATALOADER_ID_TO_SET_NAME[dataloader_id]
-        self.log(f"Test/{set_name}_cross_entropy", loss, add_dataloader_idx=False)
         self.log(f"Test/{set_name}_accuracy", accuracy, add_dataloader_idx=False)
 
-    def _get_cross_entropy_and_accuracy(self, batch) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _get_cross_entropy_and_accuracy(
+        self, batch
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Compute cross entropy loss and accuracy of batch.
         Args:
@@ -201,7 +203,20 @@ class SpnDiscriminative(LitModel):
         """
         data, labels = batch
         data = self.preprocess(data)
-        outputs = self.spn(data)  # [N, C]
-        loss = self.criterion(outputs, labels)
-        accuracy = (labels == outputs.argmax(-1)).sum() / outputs.shape[0]
+        # logp(x | y)
+        ll_x_g_y = self.spn(data)  # [N, C]
+
+        # logp(y | x) = logp(x, y) - logp(x)
+        #             = logp(x | y) + logp(y) - logp(x)
+        #             = logp(x | y) + logp(y) - logsumexp(logp(x,y), dim=y)
+        ll_y = np.log( 1. / self.spn.config.num_classes)
+        ll_x_and_y = ll_x_g_y + ll_y
+        ll_x = torch.logsumexp(ll_x_and_y, dim=1, keepdim=True)
+        ll_y_g_x = ll_x_g_y + ll_y - ll_x
+
+        # Criterion is NLL which takes logp( y | x)
+        # NOTE: Don't use nn.CrossEntropyLoss because it expects unnormalized logits
+        # and applies LogSoftmax first
+        loss = self.criterion(ll_y_g_x, labels)
+        accuracy = (labels == ll_y_g_x.argmax(-1)).sum() / ll_y_g_x.shape[0]
         return loss, accuracy

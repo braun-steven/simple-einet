@@ -9,7 +9,8 @@ from fast_pytorch_kmeans import KMeans
 from torch import nn
 
 from simple_einet.distributions import AbstractLeaf, RatNormal, truncated_normal_
-from simple_einet.einsum_layer import EinsumLayer, EinsumMixingLayer, SumProdLayer
+from simple_einet.einsum_layer import EinsumLayer, EinsumMixingLayer, LinsumLayer, \
+    LinsumLayerLogWeights
 from simple_einet.factorized_leaf_layer import FactorizedLeaf
 from simple_einet.layers import Sum
 from simple_einet.type_checks import check_valid
@@ -47,6 +48,7 @@ class EinetConfig:
     leaf_type: Type = None
     leaf_kwargs: Dict[str, Any] = None
     cross_product: bool = False
+    log_weights: bool = False
 
     def assert_valid(self):
         """Check whether the configuration is valid."""
@@ -186,15 +188,18 @@ class Einet(nn.Module):
 
         einsum_layers = []
 
-        # Start first layer with width split (therefore, the in_shape has to be [2, 1])
         for i in np.arange(start=1, stop=self.config.depth + 1):
 
-            _num_sums_in = (
-                self.config.num_sums
-                if i < self.config.depth
-                else self.config.num_leaves
-            )
-            _num_sums_out = self.config.num_sums if i > 1 else self.config.num_classes
+            if i < self.config.depth:
+                _num_sums_in = self.config.num_sums
+            else:
+                _num_sums_in = self.config.num_leaves
+
+            if i > 1:
+                _num_sums_out = self.config.num_sums
+            else:
+                _num_sums_out = self.config.num_classes
+
             in_features = 2**i
 
             if self.config.cross_product:
@@ -206,13 +211,23 @@ class Einet(nn.Module):
                     dropout=self.config.dropout
                 )
             else:
-                layer = SumProdLayer(
-                    num_features=in_features,
-                    num_sums_in=_num_sums_in,
-                    num_sums_out=_num_sums_out,
-                    num_repetitions=self.config.num_repetitions,
-                    dropout=self.config.dropout
-                )
+                if self.config.log_weights:
+                    layer = LinsumLayerLogWeights(
+                        num_features=in_features,
+                        num_sums_in=_num_sums_in,
+                        num_sums_out=_num_sums_out,
+                        num_repetitions=self.config.num_repetitions,
+                        dropout=self.config.dropout
+                    )
+
+                else:
+                    layer = LinsumLayer(
+                        num_features=in_features,
+                        num_sums_in=_num_sums_in,
+                        num_sums_out=_num_sums_out,
+                        num_repetitions=self.config.num_repetitions,
+                        dropout=self.config.dropout
+                    )
 
 
             einsum_layers.append(layer)

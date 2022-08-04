@@ -121,11 +121,15 @@ def parse_args():
         action="store_true",
         help="Debug flag (less data, fewer iterations)",
     )
-    parser.add_argument("-S", type=int, default=10, help="Number of output sum nodes in each layer.")
-    parser.add_argument("-I", type=int, default=10, help="Number of distributions for each RV.")
+    parser.add_argument(
+        "-S", type=int, default=10, help="Number of output sum nodes in each layer."
+    )
+    parser.add_argument(
+        "-I", type=int, default=10, help="Number of distributions for each RV."
+    )
     parser.add_argument("-D", type=int, default=3)
     parser.add_argument("-R", type=int, default=1)
-    parser.add_argument("--gpu", type=int, help="GPU device id.")
+    parser.add_argument("--gpu", help="GPU device id.")
 
     parser.add_argument(
         "--load-and-eval",
@@ -136,7 +140,9 @@ def parse_args():
         "training is skipped and model is "
         "evaluated",
     )
-    parser.add_argument("--cp", action="store_true", help="Use crossproduct in einsum layer")
+    parser.add_argument(
+        "--cp", action="store_true", help="Use crossproduct in einsum layer"
+    )
     parser.add_argument(
         "--dist",
         type=Dist,
@@ -144,6 +150,28 @@ def parse_args():
         default=Dist.BINOMIAL,
         help="data distribution",
     )
+    parser.add_argument(
+        "--precision",
+        "-p",
+        default=32,
+        help="floating point precision [16, " "bf16, 32]",
+        choices=["16", "bf16", "32"],
+    )
     parser.add_argument("--group-tag", type=str, help="tag for group of experiments")
     parser.add_argument("--tag", type=str, help="tag for experiment")
-    return parser.parse_args()
+    parser.add_argument(
+        "--wandb", action="store_true", help="enable wandb online logging"
+    )
+    parser.add_argument("--swa", action="store_true", help="use Stochastic Weight Averaging")
+
+    parser.add_argument("--profiler", help="", choices=["simple", "pytorch", "advanced"])
+
+    parser.add_argument("--log-weights", action="store_true", help="use log weights")
+
+    # Parse args
+    args = parser.parse_args()
+
+    # If FP16/FP32 is given, convert to int (else it's "bf16", keep string)
+    if args.precision == "16" or args.precision == "32":
+        args.precision = int(args.precision)
+    return args

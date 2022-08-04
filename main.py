@@ -43,7 +43,9 @@ def log_likelihoods(outputs, targets=None):
     return lls
 
 
-def train(args, model: Union[Einet, EinetMixture], device, train_loader, optimizer, epoch):
+def train(
+    args, model: Union[Einet, EinetMixture], device, train_loader, optimizer, epoch
+):
 
     model.train()
 
@@ -55,7 +57,9 @@ def train(args, model: Union[Einet, EinetMixture], device, train_loader, optimiz
             break
 
         # Prepare data
-        data, target = data.to(device, memory_format=torch.channels_last), target.to(device)
+        data, target = data.to(device, memory_format=torch.channels_last), target.to(
+            device
+        )
         data = preprocess(
             data,
             n_bits,
@@ -74,7 +78,6 @@ def train(args, model: Union[Einet, EinetMixture], device, train_loader, optimiz
 
         # Compute gradients
         loss.backward()
-
 
         # Update weights
         optimizer.step()
@@ -126,7 +129,6 @@ def test(model, device, loader, tag):
             test_loss += -1 * outputs.sum()
             test_losses += outputs.squeeze().cpu().tolist()
 
-
     test_loss /= len(loader.dataset)
 
     print()
@@ -139,7 +141,7 @@ if __name__ == "__main__":
     torch.manual_seed(args.seed)
 
     n_bits = args.n_bits
-    n_bins = 2 ** n_bits
+    n_bins = 2**n_bits
 
     device = torch.device(args.device)
     # digits = [0, 1, 5, 8]
@@ -164,13 +166,18 @@ if __name__ == "__main__":
         dropout=0.0,
     )
     model = Einet(config).to(device)
-    print("Number of parameters:", sum(p.numel() for p in model.parameters() if p.requires_grad))
+    print(
+        "Number of parameters:",
+        sum(p.numel() for p in model.parameters() if p.requires_grad),
+    )
 
     has_gauss_dist = type(model.leaf.base_leaf) in (Normal, RatNormal)
 
     # Optimize Einet parameters (weights and leaf params)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=2, gamma=1e-1, verbose=True)
+    lr_scheduler = torch.optim.lr_scheduler.StepLR(
+        optimizer, step_size=2, gamma=1e-1, verbose=True
+    )
 
     print(model)
     home_dir = os.getenv("HOME")
@@ -226,7 +233,13 @@ if __name__ == "__main__":
             grid_kwargs = dict(nrow=10, normalize=True, padding=1, pad_value=1.0)
             samples = samples / 255
         else:
-            grid_kwargs = dict(nrow=10, normalize=True, value_range=(-0.5, 0.5), padding=1, pad_value=1.0)
+            grid_kwargs = dict(
+                nrow=10,
+                normalize=True,
+                value_range=(-0.5, 0.5),
+                padding=1,
+                pad_value=1.0,
+            )
 
         grid = torchvision.utils.make_grid(samples, **grid_kwargs)
 
@@ -238,7 +251,9 @@ if __name__ == "__main__":
         mpe = model.mpe(evidence=None)
         mpe = mpe.view(-1, *data_shape)
 
-        torchvision.utils.save_image(mpe, os.path.join(result_dir, "mpe.png"), **grid_kwargs)
+        torchvision.utils.save_image(
+            mpe, os.path.join(result_dir, "mpe.png"), **grid_kwargs
+        )
 
         ################
         # ground-truth #
@@ -260,7 +275,9 @@ if __name__ == "__main__":
         # reconstructions #
         ###################
         image_scope = np.array(range(np.prod(data_shape))).reshape(data_shape)
-        marginalized_scopes = list(image_scope[:, 0 : round(data_shape[-1] / 2), :].reshape(-1))
+        marginalized_scopes = list(
+            image_scope[:, 0 : round(data_shape[-1] / 2), :].reshape(-1)
+        )
 
         num_samples = 1
         reconstructions = None
@@ -270,14 +287,14 @@ if __name__ == "__main__":
                     evidence=test_x,
                     temperature_leaves=args.temperature_leaves,
                     marginalized_scopes=marginalized_scopes,
-                    mpe_at_leaves=True
+                    mpe_at_leaves=True,
                 ).cpu()
             else:
                 reconstructions += model.sample(
                     evidence=test_x,
                     temperature_leaves=args.temperature_leaves,
                     marginalized_scopes=marginalized_scopes,
-                    mpe_at_leaves=True
+                    mpe_at_leaves=True,
                 ).cpu()
         reconstructions = reconstructions.float() / num_samples
         if not has_gauss_dist:
@@ -286,7 +303,9 @@ if __name__ == "__main__":
 
         reconstructions = reconstructions.view(-1, *data_shape)
         grid = torchvision.utils.make_grid(reconstructions, **grid_kwargs)
-        torchvision.utils.save_image(grid, os.path.join(result_dir, "reconstructions.png"))
+        torchvision.utils.save_image(
+            grid, os.path.join(result_dir, "reconstructions.png")
+        )
 
         #######################
         # reconstructions-mpe #
@@ -300,7 +319,9 @@ if __name__ == "__main__":
 
         reconstructions_mpe = reconstructions_mpe.view(-1, *data_shape)
         grid = torchvision.utils.make_grid(reconstructions_mpe, **grid_kwargs)
-        torchvision.utils.save_image(grid, os.path.join(result_dir, "reconstructions_mpe.png"))
+        torchvision.utils.save_image(
+            grid, os.path.join(result_dir, "reconstructions_mpe.png")
+        )
 
         print(f"Result directory: {result_dir}")
         print("Done.")

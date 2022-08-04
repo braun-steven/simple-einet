@@ -1,10 +1,15 @@
 import argparse
+from omegaconf import DictConfig
+import io
 import json
 import pathlib
 import pprint
 
+import PIL
+import matplotlib
 import matplotlib.pyplot as plt
 import torchvision.utils
+from pytorch_lightning.loggers import WandbLogger
 
 from rtpt import RTPT
 
@@ -18,15 +23,16 @@ import logging
 import os
 import random
 import time
-from typing import List, Dict
+from typing import List, Dict, Tuple
 
 import numpy as np
 import torch
 from torch.backends import cudnn as cudnn
 from torch.nn.parallel.distributed import DistributedDataParallel
 from torch.utils.tensorboard import SummaryWriter
+from torchvision.transforms import ToTensor
 
-from simple_einet.data import build_dataloader, get_data_shape, Shape
+from simple_einet.data import build_dataloader, get_data_shape, Shape, generate_data
 
 
 def save_args(results_dir: str, args: argparse.Namespace):
@@ -41,12 +47,12 @@ def save_args(results_dir: str, args: argparse.Namespace):
 
 
 def make_results_dir(
-        results_dir: str,
-        experiment_name: str,
-        tag: str,
-        dataset_name: str,
-        debug: bool = False,
-        remove_if_exists=True,
+    results_dir: str,
+    experiment_name: str,
+    tag: str,
+    dataset_name: str,
+    debug: bool = False,
+    remove_if_exists=True,
 ):
     """
     Returns the path to the results directory for the given experiment and dataset.
@@ -62,16 +68,6 @@ def make_results_dir(
     Returns:
         Path to the results directory.
     """
-    # timestamp = time.time()
-    # # Convert time
-    # date_str = datetime.datetime.fromtimestamp(timestamp).strftime("%y%m%d_%H%M")
-
-    # Append tag if given
-    # if tag is None:
-    #     experiment_dir = date_str
-    # else:
-    #     experiment_dir = date_str + "_" + tag
-
     if tag is None:
         dirname = "unnamed"
     else:
@@ -88,7 +84,6 @@ def make_results_dir(
         dataset_name,
         dirname,
     )
-
 
     if remove_if_exists:
         if os.path.exists(experiment_dir):
@@ -181,11 +176,11 @@ def count_params(model: torch.nn.Module) -> int:
 
 
 def generate_run_base_dir(
-        result_dir: str,
-        timestamp: int = None,
-        tag: str = None,
-        sub_dirs: List[str] = None,
-        debug: bool = False,
+    result_dir: str,
+    timestamp: int = None,
+    tag: str = None,
+    sub_dirs: List[str] = None,
+    debug: bool = False,
 ) -> str:
     """
     Generate a base directory for each experiment run.
@@ -234,9 +229,9 @@ def seed_all_rng(seed=None):
     """
     if seed is None:
         seed = (
-                os.getpid()
-                + int(datetime.now().strftime("%S%f"))
-                + int.from_bytes(os.urandom(2), "big")
+            os.getpid()
+            + int(datetime.now().strftime("%S%f"))
+            + int.from_bytes(os.urandom(2), "big")
         )
         logger.info("Using a generated random seed {}".format(seed))
     np.random.seed(seed)
@@ -306,7 +301,7 @@ def auto_scale_workers(cfg, num_workers: int):
     cfg.defrost()
 
     assert (
-            cfg.train.batch_size % old_world_size == 0
+        cfg.train.batch_size % old_world_size == 0
     ), "Invalid REFERENCE_WORLD_SIZE in config!"
     scale = num_workers / old_world_size
     bs = cfg.train.batch_size = int(round(cfg.train.batch_size * scale))
@@ -341,7 +336,7 @@ def detect_anomaly(losses: torch.Tensor, iteration: int):
     """
     # use a new stream so the ops don't wait for DDP
     with torch.cuda.stream(
-            torch.cuda.Stream(device=losses.device)
+        torch.cuda.Stream(device=losses.device)
     ) if losses.device.type == "cuda" else contextlib.nullcontext():
         if not torch.isfinite(losses).all():
             raise FloatingPointError(
@@ -432,8 +427,8 @@ def print_num_params(model: nn.Module):
 
 
 def preprocess(
-        x: torch.Tensor,
-        n_bits: int,
+    x: torch.Tensor,
+    n_bits: int,
 ) -> torch.Tensor:
     x = reduce_bits(x, n_bits)
     # x = x.long()
@@ -486,8 +481,12 @@ def build_tensorboard_writer(results_dir):
     return SummaryWriter(os.path.join(results_dir, "tensorboard"))
 
 
-def setup_experiment(name: str, args: argparse.Namespace, remove_if_exists: bool = True,
-                     with_tensorboard=True):
+def setup_experiment(
+    name: str,
+    args: argparse.Namespace,
+    remove_if_exists: bool = True,
+    with_tensorboard=True,
+):
     """
     Sets up the experiment.
     Args:
@@ -520,7 +519,7 @@ def setup_experiment(name: str, args: argparse.Namespace, remove_if_exists: bool
             experiment_name=name,
             tag=args.tag,
             dataset_name=args.dataset,
-            remove_if_exists=remove_if_exists
+            remove_if_exists=remove_if_exists,
         )
         # Save args to file
         save_args(results_dir, args)
@@ -561,49 +560,33 @@ def setup_experiment(name: str, args: argparse.Namespace, remove_if_exists: bool
         image_shape,
         rtpt,
     )
-def setup_experiment_lit(name: str, args: argparse.Namespace, remove_if_exists: bool = False):
+
+def setup_experiment(name: str, cfg: DictConfig, remove_if_exists: bool = False):
     """
     Sets up the experiment.
     Args:
         name: The name of the experiment.
     """
-    print(f"Arguments: {args}")
-
-    # Check if we want to restore from a finished experiment
-    if args.load_and_eval is not None:
-        # Load args
-        old_dir: pathlib.Path = args.load_and_eval.expanduser()
-        args_file = os.path.join(old_dir, "args.json")
-        old_args = argparse.Namespace(**json.load(open(args_file)))
-        old_args.load_and_eval = args.load_and_eval
-        old_args.gpu = args.gpu
-
-        print("Loading from existing directory:", old_dir)
-        print("Loading with existing args:", pprint.pformat(old_args))
-
-        results_dir = str(old_dir)
-        args = old_args
-    else:
-        # Create result directory
-        results_dir = make_results_dir(
-            results_dir=args.results_dir,
-            experiment_name=name,
-            tag=args.tag,
-            dataset_name=args.dataset,
-            remove_if_exists=remove_if_exists
-        )
-        # Save args to file
-        save_args(results_dir, args)
+    # Create result directory
+    results_dir = make_results_dir(
+        results_dir=cfg.results_dir,
+        experiment_name=name,
+        tag=cfg.tag,
+        dataset_name=cfg.dataset,
+        remove_if_exists=remove_if_exists,
+    )
+    # Save args to file
+    # save_args(results_dir, cfg)
 
     # Save args to file
     print(f"Results directory: {results_dir}")
-    seed_all_rng(args.seed)
+    seed_all_rng(cfg.seed)
     cudnn.benchmark = True
-    return results_dir, args
+    return results_dir, cfg
 
 def anneal_tau(epoch, max_epochs):
     """Anneal the softmax temperature tau based on the epoch progress."""
-    return max(0.5, np.exp(-1/max_epochs * epoch))
+    return max(0.5, np.exp(-1 / max_epochs * epoch))
 
 
 def load_from_checkpoint(results_dir, load_fn, args):
@@ -621,6 +604,7 @@ def load_from_checkpoint(results_dir, load_fn, args):
     model = load_fn(checkpoint_path=ckpt_path, args=args)
     return model
 
+
 def save_samples(generate_samples, samples_dir, num_samples, nrow):
     for i in range(5):
         samples = generate_samples(num_samples)
@@ -628,3 +612,92 @@ def save_samples(generate_samples, samples_dir, num_samples, nrow):
             samples, nrow=nrow, pad_value=0.0, normalize=True
         )
         torchvision.utils.save_image(grid, os.path.join(samples_dir, f"{i}.png"))
+
+
+from matplotlib.cm import tab10
+from matplotlib import cm
+
+TEXTWIDTH = 5.78853
+LINEWIDTH = 0.75
+ARROW_HEADWIDTH = 5
+colors = tab10.colors
+
+
+def get_figsize(scale: float, aspect_ratio=0.8) -> Tuple[float, float]:
+    """
+    Scale the default figure size to: (scale * TEXTWIDTH, scale * aspect_ratio * TEXTWIDTH).
+
+    Args:
+      scale(float): Figsize scale. Should be lower than 1.0.
+      aspect_ratio(float): Aspect ratio (as scale), height to width. (Default value = 0.8)
+
+    Returns:
+      Tuple: Tuple containing (width, height) of the figure.
+
+    """
+    height = aspect_ratio * TEXTWIDTH
+    widht = TEXTWIDTH
+    return (scale * widht, scale * height)
+
+
+def set_style():
+    matplotlib.use("pgf")
+    plt.style.use(["science", "grid"])  # Need SciencePlots pip package
+    matplotlib.rcParams.update(
+        {
+            "pgf.texsystem": "pdflatex",
+            "font.family": "serif",
+            "text.usetex": True,
+            "pgf.rcfonts": False,
+        }
+    )
+
+
+def plot_distribution(model, dataset_name, logger_wandb: WandbLogger = None):
+    with torch.no_grad():
+        data, targets = generate_data(dataset_name, n_samples=1000)
+        fig = plt.figure(figsize=get_figsize(1.0))
+        data_cpu = data.cpu()
+        delta = 0.05
+        xmin, xmax = data_cpu[:, 0].min(), data_cpu[:, 0].max()
+        ymin, ymax = data_cpu[:, 1].min(), data_cpu[:, 1].max()
+        plt.xlim(xmin, xmax)
+        plt.ylim(ymin, ymax)
+        x = np.arange(xmin * 1.05, xmax * 1.05, delta)
+        y = np.arange(ymin * 1.05, ymax * 1.05, delta)
+        X, Y = np.meshgrid(x, y)
+
+        Z = torch.exp(
+            model(
+                torch.from_numpy(np.c_[X.flatten(), Y.flatten()])
+                .to(data.device)
+                .float()
+            ).float()
+        ).cpu()
+        Z = Z.view(X.shape)
+        CS = plt.contourf(X, Y, Z, 100, cmap=plt.cm.viridis)
+        plt.colorbar(CS)
+
+        plt.scatter(
+            *data_cpu[:500].T,
+            label="Data",
+            ec="black",
+            lw=0.5,
+            s=10,
+            alpha=0.5,
+            color=colors[1],
+        )
+
+        plt.xlabel("$X_0$")
+        plt.ylabel("$X_1$")
+        plt.title(f"Learned PDF represented by the SPN")
+
+        buf = io.BytesIO()
+        plt.savefig(buf, format="jpeg")
+        buf.seek(0)
+        image = PIL.Image.open(buf)
+        image = ToTensor()(image)
+
+        # Add figure in numpy "image" to TensorBoard writer
+        logger_wandb.log_image("distribution", images=[image])
+        plt.close(fig)

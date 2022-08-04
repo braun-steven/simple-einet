@@ -7,9 +7,11 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, Tuple
 
+import numpy as np
 import torch
 import torchvision.transforms as transforms
-from torch.utils.data import DataLoader, Dataset, random_split
+from sklearn import datasets
+from torch.utils.data import DataLoader, Dataset, random_split, ConcatDataset
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data.sampler import Sampler
 from torchvision.datasets import CIFAR10, MNIST, SVHN, CelebA, FashionMNIST, LSUN
@@ -34,16 +36,19 @@ class Shape:
 
     def downscale(self, scale):
         """Downscale this shape by the given scale. Only changes height/width."""
-        return Shape(self.channels, round(self.height / scale), round(self.width / scale))
+        return Shape(
+            self.channels, round(self.height / scale), round(self.width / scale)
+        )
 
     def upscale(self, scale):
         """Upscale this shape by the given scale. Only changes height/width."""
-        return Shape(self.channels, round(self.height * scale), round(self.width * scale))
+        return Shape(
+            self.channels, round(self.height * scale), round(self.width * scale)
+        )
 
     @property
     def num_pixels(self):
         return self.width * self.height
-
 
 
 def get_data_shape(dataset_name: str) -> Shape:
@@ -55,6 +60,9 @@ def get_data_shape(dataset_name: str) -> Shape:
     Returns:
         Tuple[int, int, int]: Tuple of [channels, height, width].
     """
+    if "synth" in dataset_name:
+        return Shape(1, 2, 1)
+
     return Shape(
         *{
             "mnist": (1, 32, 32),
@@ -63,6 +71,7 @@ def get_data_shape(dataset_name: str) -> Shape:
             "fmnist-28": (1, 28, 28),
             "cifar": (3, 32, 32),
             "svhn": (3, 32, 32),
+            "svhn-extra": (3, 32, 32),
             "celeba": (3, 64, 64),
             "celeba-small": (3, 64, 64),
             "celeba-tiny": (3, 32, 32),
@@ -70,12 +79,90 @@ def get_data_shape(dataset_name: str) -> Shape:
     )
 
 
-def get_datasets(args, normalize: bool) -> Tuple[Dataset, Dataset, Dataset]:
+@torch.no_grad()
+def generate_data(dataset_name: str, n_samples: int = 1000) -> Tuple[torch.Tensor, torch.Tensor]:
+    tag = dataset_name.replace("synth-", "")
+    if tag == "2-clusters":
+        centers = [[0.0, 0.0], [0.5, 0.5]]
+        cluster_stds = 0.1
+        data, y = datasets.make_blobs(
+            n_samples=n_samples,
+            n_features=2,
+            centers=centers,
+            cluster_std=cluster_stds,
+            random_state=0,
+        )
+
+    elif tag == "3-clusters":
+        centers = [[0.0, 0.0], [0.5, 0.5], [0.5, 0.0]]
+        cluster_stds = 0.05
+        data, y = datasets.make_blobs(
+            n_samples=n_samples,
+            n_features=2,
+            centers=centers,
+            cluster_std=cluster_stds,
+            random_state=0,
+        )
+    elif tag == "9-clusters":
+        centers = [
+            [0.0, 0.0],
+            [0.5, 0.5],
+            [0.5, 0.0],
+            [0.0, 0.5],
+            [0.5, 1.0],
+            [1.0, 0.5],
+            [1.0, 1.0],
+            [0.0, 1.0],
+            [1.0, 0.0],
+        ]
+        cluster_stds = 0.1
+        data, y = datasets.make_blobs(
+            n_samples=n_samples,
+            n_features=2,
+            centers=centers,
+            cluster_std=cluster_stds,
+            random_state=0,
+        )
+    elif tag == "2-moons":
+        data, y = datasets.make_moons(n_samples=n_samples, noise=0.1, random_state=0)
+
+    elif tag == "circles":
+        data, y = datasets.make_circles(n_samples=n_samples, factor=0.5, noise=0.05)
+
+    elif tag == "aniso":
+        # Anisotropicly distributed data
+        X, y = datasets.make_blobs(
+            n_samples=n_samples,
+            cluster_std=0.2,
+            random_state=0,
+            centers=[[-1, -1], [-1, 0.5], [0.5, 0.5]],
+        )
+        transformation = [[0.5, -0.2], [-0.2, 0.4]]
+        X_aniso = np.dot(X, transformation)
+        data = X_aniso
+
+    elif tag == "varied":
+        # blobs with varied variances
+        data, y = datasets.make_blobs(
+            n_samples=n_samples,
+            cluster_std=[0.5, 0.1, 0.3],
+            random_state=0,
+            center_box=[-2, 2],
+        )
+    else:
+        raise ValueError(f"Invalid synthetic dataset name: {tag}.")
+
+    data = torch.from_numpy(data).float()
+    labels = torch.from_numpy(y).long()
+    return data, labels
+
+
+def get_datasets(cfg, normalize: bool) -> Tuple[Dataset, Dataset, Dataset]:
     """
     Get the specified dataset.
 
     Args:
-      args: Args.
+      cfg: Args.
       normalize: Normalize the dataset.
 
     Returns:
@@ -83,7 +170,7 @@ def get_datasets(args, normalize: bool) -> Tuple[Dataset, Dataset, Dataset]:
     """
 
     # Get dataset name
-    dataset_name: str = args.dataset
+    dataset_name: str = cfg.dataset
 
     # Get the image size (assumes quadratic images)
     shape = get_data_shape(dataset_name)
@@ -98,10 +185,23 @@ def get_datasets(args, normalize: bool) -> Tuple[Dataset, Dataset, Dataset]:
         ]
     )
 
-    kwargs = dict(root=args.data_dir, download=True, transform=transform)
+    kwargs = dict(root=cfg.data_dir, download=True, transform=transform)
 
     # Select the datasets
-    if dataset_name == "mnist" or dataset_name == "mnist-28":
+    if "synth" in dataset_name:
+        # Train
+        data, labels = generate_data(dataset_name, n_samples=3000)
+        dataset_train = torch.utils.data.TensorDataset(data, labels)
+
+        # Val
+        data, labels = generate_data(dataset_name, n_samples=1000)
+        dataset_val = torch.utils.data.TensorDataset(data, labels)
+
+        # Test
+        data, labels = generate_data(dataset_name, n_samples=1000)
+        dataset_test = torch.utils.data.TensorDataset(data, labels)
+
+    elif dataset_name == "mnist" or dataset_name == "mnist-28":
         if normalize:
             transform.transforms.append(transforms.Normalize([0.5], [0.5]))
 
@@ -140,7 +240,9 @@ def get_datasets(args, normalize: bool) -> Tuple[Dataset, Dataset, Dataset]:
 
     elif "celeba" in dataset_name:
         if normalize:
-            transform.transforms.append(transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)))
+            transform.transforms.append(
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+            )
 
         dataset_train = CelebA(**kwargs, split="train")
         dataset_val = CelebA(**kwargs, split="valid")
@@ -148,7 +250,9 @@ def get_datasets(args, normalize: bool) -> Tuple[Dataset, Dataset, Dataset]:
 
     elif dataset_name == "cifar":
         if normalize:
-            transform.transforms.append(transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]))
+            transform.transforms.append(
+                transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
+            )
         dataset_train = CIFAR10(**kwargs, train=True)
 
         N = len(dataset_train.data)
@@ -158,16 +262,26 @@ def get_datasets(args, normalize: bool) -> Tuple[Dataset, Dataset, Dataset]:
         dataset_train, dataset_val = random_split(dataset_train, lengths=lenghts)
         dataset_test = CIFAR10(**kwargs, train=False)
 
-    elif dataset_name == "svhn":
+    elif "svhn" in dataset_name:
         if normalize:
-            transform.transforms.append(transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]))
+            transform.transforms.append(
+                transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
+            )
 
+        # Load train
         dataset_train = SVHN(**kwargs, split="train")
+
+
 
         N = len(dataset_train.data)
         lenghts = [round(N * 0.9), round(N * 0.1)]
         dataset_train, dataset_val = random_split(dataset_train, lengths=lenghts)
         dataset_test = SVHN(**kwargs, split="test")
+
+        if dataset_name == "svhn-extra":
+            # Merge train and extra into train
+            dataset_extra = SVHN(**kwargs, split="extra")
+            dataset_train = ConcatDataset([dataset_train, dataset_extra])
 
     else:
         raise Exception(f"Unknown dataset: {dataset_name}")
@@ -176,19 +290,19 @@ def get_datasets(args, normalize: bool) -> Tuple[Dataset, Dataset, Dataset]:
 
 
 def build_dataloader(
-    args, loop: bool, normalize: bool
+    cfg, loop: bool, normalize: bool
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     # Get dataset objects
-    dataset_train, dataset_val, dataset_test = get_datasets(args, normalize=normalize)
+    dataset_train, dataset_val, dataset_test = get_datasets(cfg, normalize=normalize)
 
     # Build data loader
-    loader_train = _make_loader(args, dataset_train, loop=loop, shuffle=True)
-    loader_val = _make_loader(args, dataset_val, loop=loop, shuffle=False)
-    loader_test = _make_loader(args, dataset_test, loop=loop, shuffle=False)
+    loader_train = _make_loader(cfg, dataset_train, loop=loop, shuffle=True)
+    loader_val = _make_loader(cfg, dataset_val, loop=loop, shuffle=False)
+    loader_test = _make_loader(cfg, dataset_test, loop=loop, shuffle=False)
     return loader_train, loader_val, loader_test
 
 
-def _make_loader(args, dataset: Dataset, loop: bool, shuffle: bool) -> DataLoader:
+def _make_loader(cfg, dataset: Dataset, loop: bool, shuffle: bool) -> DataLoader:
     if loop:
         sampler = TrainingSampler(size=len(dataset))
     else:
@@ -200,8 +314,8 @@ def _make_loader(args, dataset: Dataset, loop: bool, shuffle: bool) -> DataLoade
         dataset,
         shuffle=(sampler is None) and shuffle,
         sampler=sampler,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
+        batch_size=cfg.batch_size,
+        num_workers=cfg.num_workers,
         pin_memory=True,
         drop_last=False,
         worker_init_fn=worker_init_reset_seed,
@@ -241,7 +355,9 @@ class TrainingSampler(Sampler):
 
     def __iter__(self):
         start = self._rank
-        yield from itertools.islice(self._infinite_indices(), start, None, self._world_size)
+        yield from itertools.islice(
+            self._infinite_indices(), start, None, self._world_size
+        )
 
     def _infinite_indices(self):
         g = torch.Generator()
