@@ -142,3 +142,8 @@ cython_debug/
 /.idea/
 
 wandb/
+
+einet/
+outputs/
+
+*.DS_Store
