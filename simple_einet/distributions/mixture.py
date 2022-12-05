@@ -13,6 +13,7 @@ from simple_einet.layers import AbstractLayer, Sum
 from simple_einet.type_checks import check_valid
 from simple_einet.distributions.abstract_leaf import AbstractLeaf, dist_mode
 
+
 class Mixture(AbstractLeaf):
     def __init__(
         self,
@@ -32,9 +33,7 @@ class Mixture(AbstractLeaf):
         """
         super().__init__(in_features, out_channels, num_repetitions, dropout)
         # Build different layers for each distribution specified
-        reprs = [
-            distr(in_features, out_channels, num_repetitions, dropout) for distr in distributions
-        ]
+        reprs = [distr(in_features, out_channels, num_repetitions, dropout) for distr in distributions]
         self.representations = nn.ModuleList(reprs)
 
         # Build sum layer as mixture of distributions
@@ -74,8 +73,6 @@ class Mixture(AbstractLeaf):
         # If parent index into out_channels are given
         if context.indices_out is not None:
             # Choose only specific samples for each feature/scope
-            samples = torch.gather(samples, dim=2, index=context.indices_out.unsqueeze(-1)).squeeze(
-                -1
-            )
+            samples = torch.gather(samples, dim=2, index=context.indices_out.unsqueeze(-1)).squeeze(-1)
 
         return samples

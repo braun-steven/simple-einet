@@ -35,20 +35,14 @@ class Binomial(AbstractLeaf):
         self.total_count = check_valid(total_count, int, lower_bound=1)
 
         # Create binomial parameters
-        self.probs = nn.Parameter(
-            torch.randn(1, num_channels, num_features, num_leaves, num_repetitions)
-        )
+        self.probs = nn.Parameter(torch.randn(1, num_channels, num_features, num_leaves, num_repetitions))
 
     def _get_base_distribution(self, context: SamplingContext = None):
         # Use sigmoid to ensure, that probs are in valid range
         if context is not None and context.is_differentiable:
-            return CustomBinomial(
-                probs=self.probs.sigmoid(), total_count=self.total_count
-            )
+            return CustomBinomial(probs=self.probs.sigmoid(), total_count=self.total_count)
         else:
-            return dist.Binomial(
-                probs=self.probs.sigmoid(), total_count=self.total_count
-            )
+            return dist.Binomial(probs=self.probs.sigmoid(), total_count=self.total_count)
 
 
 class CustomBinomial:
@@ -94,18 +88,10 @@ class ConditionalBinomial(AbstractLeaf):
         self.cond_idxs = cond_idxs
 
         self.probs_conditioned_base = nn.Parameter(
-            0.5
-            + torch.rand(
-                1, num_channels, num_features // 2, num_leaves, num_repetitions
-            )
-            * 0.1
+            0.5 + torch.rand(1, num_channels, num_features // 2, num_leaves, num_repetitions) * 0.1
         )
         self.probs_unconditioned = nn.Parameter(
-            0.5
-            + torch.rand(
-                1, num_channels, num_features // 2, num_leaves, num_repetitions
-            )
-            * 0.1
+            0.5 + torch.rand(1, num_channels, num_features // 2, num_leaves, num_repetitions) * 0.1
         )
 
     def get_conditioned_distribution(self, x_cond: torch.Tensor):
@@ -155,9 +141,7 @@ class ConditionalBinomial(AbstractLeaf):
 
         return x
 
-    def sample(
-        self, num_samples: int = None, context: SamplingContext = None
-    ) -> torch.Tensor:
+    def sample(self, num_samples: int = None, context: SamplingContext = None) -> torch.Tensor:
         ev = context.evidence
         x_cond = ev[:, :, self.cond_idxs, None, None]
         d = self.get_conditioned_distribution(x_cond)
@@ -185,9 +169,7 @@ class ConditionalBinomial(AbstractLeaf):
         # If parent index into out_channels are given
         if context.indices_out is not None:
             # Choose only specific samples for each feature/scope
-            samples = torch.gather(
-                samples, dim=2, index=context.indices_out.unsqueeze(-1)
-            ).squeeze(-1)
+            samples = torch.gather(samples, dim=2, index=context.indices_out.unsqueeze(-1)).squeeze(-1)
 
         return samples
 

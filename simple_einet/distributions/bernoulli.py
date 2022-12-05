@@ -19,9 +19,7 @@ class Bernoulli(AbstractLeaf):
         super().__init__(num_features, num_channels, num_leaves, num_repetitions)
 
         # Create bernoulli parameters
-        self.probs = nn.Parameter(
-            torch.randn(1, num_channels, num_features, num_leaves, num_repetitions)
-        )
+        self.probs = nn.Parameter(torch.randn(1, num_channels, num_features, num_leaves, num_repetitions))
 
     def _get_base_distribution(self):
         # Use sigmoid to ensure, that probs are in valid range

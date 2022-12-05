@@ -57,6 +57,7 @@ def dist_mode(distribution: dist.Distribution, context: SamplingContext = None) 
         return distribution.mean.repeat(context.num_samples, 1, 1, 1, 1)
     from simple_einet.distributions.normal import CustomNormal
     from simple_einet.distributions.binomial import CustomBinomial
+
     if isinstance(distribution, CustomNormal):
         # Repeat the mode along the batch axis
         return distribution.mu.repeat(context.num_samples, 1, 1, 1, 1)
@@ -94,14 +95,11 @@ def dist_sample(distribution: dist.Distribution, context: SamplingContext = None
         samples = samples.unsqueeze(1)
     else:
         from simple_einet.distributions import CustomNormal
+
         if type(distribution) == dist.Normal:
-            distribution = dist.Normal(
-                loc=distribution.loc, scale=distribution.scale * context.temperature_leaves
-            )
+            distribution = dist.Normal(loc=distribution.loc, scale=distribution.scale * context.temperature_leaves)
         elif type(distribution) == CustomNormal:
-            distribution = CustomNormal(
-                mu=distribution.mu, sigma=distribution.sigma * context.temperature_leaves
-            )
+            distribution = CustomNormal(mu=distribution.mu, sigma=distribution.sigma * context.temperature_leaves)
         samples = distribution.sample(sample_shape=(context.num_samples,))
 
     assert (
@@ -174,7 +172,9 @@ class AbstractLeaf(AbstractLayer, ABC):
     def _apply_dropout(self, x: torch.Tensor) -> torch.Tensor:
         # Apply dropout sampled from a bernoulli during training (model.train() has been called)
         if self.dropout > 0.0 and self.training:
-            dropout_indices = self._bernoulli_dist.sample(x.shape, ).bool()
+            dropout_indices = self._bernoulli_dist.sample(
+                x.shape,
+            ).bool()
             x[dropout_indices] = 0.0
         return x
 

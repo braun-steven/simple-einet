@@ -9,6 +9,7 @@ from simple_einet.layers import AbstractLayer
 from simple_einet.type_checks import check_valid
 from simple_einet.utils import SamplingContext, index_one_hot, diff_sample_one_hot
 
+
 class LinsumLayer(AbstractLayer):
     def __init__(
         self,
@@ -24,9 +25,7 @@ class LinsumLayer(AbstractLayer):
         self.num_sums_out = check_valid(num_sums_out, int, 1)
         cardinality = 2  # Fixed to binary graphs for now
         self.cardinality = check_valid(cardinality, int, 2, num_features + 1)
-        self.num_features_out = np.ceil(self.num_features / self.cardinality).astype(
-            int
-        )
+        self.num_features_out = np.ceil(self.num_features / self.cardinality).astype(int)
         self._pad = 0
 
         ws = self._init_weights()
@@ -34,9 +33,7 @@ class LinsumLayer(AbstractLayer):
         self.weights = nn.Parameter(ws)
 
         # Dropout
-        self.dropout = check_valid(
-            dropout, expected_type=float, lower_bound=0.0, upper_bound=1.0
-        )
+        self.dropout = check_valid(dropout, expected_type=float, lower_bound=0.0, upper_bound=1.0)
         self._bernoulli_dist = torch.distributions.Bernoulli(probs=self.dropout)
 
         # Necessary for sampling with evidence: Save input during forward pass.
@@ -44,9 +41,7 @@ class LinsumLayer(AbstractLayer):
         self._input_cache_left = None
         self._input_cache_right = None
 
-        self.out_shape = (
-            f"(N, {self.num_features_out}, {self.num_sums_out}, {self.num_repetitions})"
-        )
+        self.out_shape = f"(N, {self.num_features_out}, {self.num_sums_out}, {self.num_repetitions})"
 
     def _init_weights(self):
         # Weights, such that each sumnode has its own weights
@@ -60,7 +55,6 @@ class LinsumLayer(AbstractLayer):
 
     def _get_normalized_log_weights(self):
         return F.log_softmax(self.weights, dim=1)
-
 
     def forward(self, x: torch.Tensor):
         """
@@ -125,14 +119,10 @@ class LinsumLayer(AbstractLayer):
             # Index sums_out
             weights = weights.unsqueeze(0)  # make space for batch dim
             weights = weights.expand(num_samples, -1, -1, -1, -1)
-            p_idxs = context.indices_out[
-                ..., None, None, None
-            ]  # make space for repetition dim
+            p_idxs = context.indices_out[..., None, None, None]  # make space for repetition dim
             p_idxs = p_idxs.expand(-1, -1, in_channels, -1, num_repetitions)
             weights = weights.gather(dim=3, index=p_idxs)  # index out_channels
-            weights = weights.squeeze(
-                3
-            )  # squeeze out_channels dimension (is 1 at this point)
+            weights = weights.squeeze(3)  # squeeze out_channels dimension (is 1 at this point)
 
             # Index repetitions
             r_idxs = context.indices_repetition[..., None, None, None]
@@ -145,9 +135,7 @@ class LinsumLayer(AbstractLayer):
             raise NotImplementedError()
             # Index sums_out
             weights = weights.unsqueeze(0)  # make space for batch dim
-            p_idxs = context.indices_out[
-                ..., None, None, None
-            ]  # make space for repetition dim
+            p_idxs = context.indices_out[..., None, None, None]  # make space for repetition dim
             weights = index_one_hot(weights, index=p_idxs, dim=2)
             assert weights.shape == (
                 num_samples,
@@ -158,9 +146,7 @@ class LinsumLayer(AbstractLayer):
             )
 
             # Index repetition
-            r_idxs = context.indices_repetition.view(
-                num_samples, 1, num_repetitions, 1, 1
-            )
+            r_idxs = context.indices_repetition.view(num_samples, 1, num_repetitions, 1, 1)
             weights = index_one_hot(weights, index=r_idxs, dim=2)
 
         # Check dimensions
@@ -175,37 +161,19 @@ class LinsumLayer(AbstractLayer):
             raise NotImplementedError()
             # Index repetition
             if context.is_differentiable:
-                r_idxs = context.indices_repetition.view(
-                    num_samples, 1, 1, num_repetitions
-                )
-                lls_left = index_one_hot(
-                    self._input_cache_left, index=r_idxs, dim=-1
-                ).unsqueeze(3)
-                lls_right = index_one_hot(
-                    self._input_cache_right, index=r_idxs, dim=-1
-                ).unsqueeze(2)
+                r_idxs = context.indices_repetition.view(num_samples, 1, 1, num_repetitions)
+                lls_left = index_one_hot(self._input_cache_left, index=r_idxs, dim=-1).unsqueeze(3)
+                lls_right = index_one_hot(self._input_cache_right, index=r_idxs, dim=-1).unsqueeze(2)
             else:
                 r_idxs = context.indices_repetition[..., None, None, None]
                 r_idxs = r_idxs.expand(-1, out_features, in_channels, -1)
-                lls_left = (
-                    self._input_cache_left.gather(index=r_idxs, dim=-1)
-                    .squeeze(-1)
-                    .unsqueeze(3)
-                )
-                lls_right = (
-                    self._input_cache_right.gather(index=r_idxs, dim=-1)
-                    .squeeze(-1)
-                    .unsqueeze(2)
-                )
+                lls_left = self._input_cache_left.gather(index=r_idxs, dim=-1).squeeze(-1).unsqueeze(3)
+                lls_right = self._input_cache_right.gather(index=r_idxs, dim=-1).squeeze(-1).unsqueeze(2)
 
-            lls = (lls_left + lls_right).view(
-                num_samples, out_features, in_channels**2
-            )
+            lls = (lls_left + lls_right).view(num_samples, out_features, in_channels**2)
             log_prior = log_weights
             log_posterior = log_prior + lls
-            log_posterior = log_posterior - torch.logsumexp(
-                log_posterior, dim=2, keepdim=True
-            )
+            log_posterior = log_posterior - torch.logsumexp(log_posterior, dim=2, keepdim=True)
             log_weights = log_posterior
 
         # Sample/mpe from the logweights
@@ -249,9 +217,7 @@ class LinsumLayer(AbstractLayer):
                 f"but indices_repetition argument was None, expected a Long tensor size #samples."
             )
         if self.num_repetitions == 1 and context.indices_repetition is None:
-            context.indices_repetition = torch.zeros(
-                context.num_samples, dtype=torch.int, device=self.__device
-            )
+            context.indices_repetition = torch.zeros(context.num_samples, dtype=torch.int, device=self.__device)
 
     def _enable_input_cache(self):
         """Enables the input cache. This will store the input in forward passes into
@@ -265,15 +231,12 @@ class LinsumLayer(AbstractLayer):
         self._input_cache_right = None
 
     def extra_repr(self):
-        return (
-            "num_features={}, num_sums_in={}, num_sums_out={}, out_shape={}, "
-            "weights_shape={}".format(
-                self.num_features,
-                self.num_sums_in,
-                self.num_sums_out,
-                self.out_shape,
-                self.weights.shape,
-            )
+        return "num_features={}, num_sums_in={}, num_sums_out={}, out_shape={}, " "weights_shape={}".format(
+            self.num_features,
+            self.num_sums_in,
+            self.num_sums_out,
+            self.out_shape,
+            self.weights.shape,
         )
 
 
@@ -285,12 +248,13 @@ class LinsumLayerLogWeights(LinsumLayer):
             self.num_sums_in,
             self.num_sums_out,
             self.num_repetitions,
-            ).log()
+        ).log()
         return log_weights
 
     def _get_normalized_log_weights(self):
         log_weights = self.weights - self.weights.logsumexp(dim=1, keepdim=True)
         return log_weights
+
 
 class EinsumLayer(AbstractLayer):
     def __init__(
@@ -307,9 +271,7 @@ class EinsumLayer(AbstractLayer):
         self.num_sums_out = check_valid(num_sums_out, int, 1)
         cardinality = 2  # Fixed to binary graphs for now
         self.cardinality = check_valid(cardinality, int, 2, num_features + 1)
-        self.num_features_out = np.ceil(self.num_features / self.cardinality).astype(
-            int
-        )
+        self.num_features_out = np.ceil(self.num_features / self.cardinality).astype(int)
         self._pad = 0
 
         # Weights, such that each sumnode has its own weights
@@ -326,38 +288,26 @@ class EinsumLayer(AbstractLayer):
         # Create index map from flattened to coordinates (only needed in sampling)
         self.register_buffer(
             "unraveled_channel_indices",
-            torch.tensor(
-                [
-                    (i, j)
-                    for i in range(self.num_sums_in)
-                    for j in range(self.num_sums_in)
-                ]
-            ),
+            torch.tensor([(i, j) for i in range(self.num_sums_in) for j in range(self.num_sums_in)]),
         )
 
         # Create index map from flattened to coordinates (only needed in differentiable sampling)
         self.register_buffer(
             "unraveled_channel_indices_oh_0",
-            torch.nn.functional.one_hot(
-                torch.arange(self.num_sums_in).repeat_interleave(self.num_sums_in)
-            )
+            torch.nn.functional.one_hot(torch.arange(self.num_sums_in).repeat_interleave(self.num_sums_in))
             .unsqueeze(0)
             .unsqueeze(0),
         )
 
         self.register_buffer(
             "unraveled_channel_indices_oh_1",
-            torch.nn.functional.one_hot(
-                torch.arange(self.num_sums_in).repeat(self.num_sums_in)
-            )
+            torch.nn.functional.one_hot(torch.arange(self.num_sums_in).repeat(self.num_sums_in))
             .unsqueeze(0)
             .unsqueeze(0),
         )
 
         # Dropout
-        self.dropout = check_valid(
-            dropout, expected_type=float, lower_bound=0.0, upper_bound=1.0
-        )
+        self.dropout = check_valid(dropout, expected_type=float, lower_bound=0.0, upper_bound=1.0)
         self._bernoulli_dist = torch.distributions.Bernoulli(probs=self.dropout)
 
         # Necessary for sampling with evidence: Save input during forward pass.
@@ -365,9 +315,7 @@ class EinsumLayer(AbstractLayer):
         self._input_cache_left = None
         self._input_cache_right = None
 
-        self.out_shape = (
-            f"(N, {self.num_features_out}, {self.num_sums_out}, {self.num_repetitions})"
-        )
+        self.out_shape = f"(N, {self.num_features_out}, {self.num_sums_out}, {self.num_repetitions})"
 
     def forward(self, x: torch.Tensor):
         """
@@ -442,12 +390,8 @@ class EinsumLayer(AbstractLayer):
             # Index sums_out
             weights = weights.unsqueeze(0)  # make space for batch dim
             weights = weights.expand(num_samples, -1, -1, -1, -1, -1)
-            p_idxs = context.indices_out[
-                ..., None, None, None, None
-            ]  # make space for repetition dim
-            p_idxs = p_idxs.expand(
-                -1, -1, -1, num_repetitions, in_channels, in_channels
-            )
+            p_idxs = context.indices_out[..., None, None, None, None]  # make space for repetition dim
+            p_idxs = p_idxs.expand(-1, -1, -1, num_repetitions, in_channels, in_channels)
             weights = weights.gather(dim=2, index=p_idxs)
             weights = weights.squeeze(2)
 
@@ -460,9 +404,7 @@ class EinsumLayer(AbstractLayer):
         else:
             # Index sums_out
             weights = weights.unsqueeze(0)  # make space for batch dim
-            p_idxs = context.indices_out[
-                ..., None, None, None
-            ]  # make space for repetition dim
+            p_idxs = context.indices_out[..., None, None, None]  # make space for repetition dim
             weights = index_one_hot(weights, index=p_idxs, dim=2)
             assert weights.shape == (
                 num_samples,
@@ -473,9 +415,7 @@ class EinsumLayer(AbstractLayer):
             )
 
             # Index repetition
-            r_idxs = context.indices_repetition.view(
-                num_samples, 1, num_repetitions, 1, 1
-            )
+            r_idxs = context.indices_repetition.view(num_samples, 1, num_repetitions, 1, 1)
             weights = index_one_hot(weights, index=r_idxs, dim=2)
 
         # Check dimensions
@@ -492,37 +432,19 @@ class EinsumLayer(AbstractLayer):
         if self._is_input_cache_enabled and self._input_cache_left is not None:
             # Index repetition
             if context.is_differentiable:
-                r_idxs = context.indices_repetition.view(
-                    num_samples, 1, 1, num_repetitions
-                )
-                lls_left = index_one_hot(
-                    self._input_cache_left, index=r_idxs, dim=-1
-                ).unsqueeze(3)
-                lls_right = index_one_hot(
-                    self._input_cache_right, index=r_idxs, dim=-1
-                ).unsqueeze(2)
+                r_idxs = context.indices_repetition.view(num_samples, 1, 1, num_repetitions)
+                lls_left = index_one_hot(self._input_cache_left, index=r_idxs, dim=-1).unsqueeze(3)
+                lls_right = index_one_hot(self._input_cache_right, index=r_idxs, dim=-1).unsqueeze(2)
             else:
                 r_idxs = context.indices_repetition[..., None, None, None]
                 r_idxs = r_idxs.expand(-1, out_features, in_channels, -1)
-                lls_left = (
-                    self._input_cache_left.gather(index=r_idxs, dim=-1)
-                    .squeeze(-1)
-                    .unsqueeze(3)
-                )
-                lls_right = (
-                    self._input_cache_right.gather(index=r_idxs, dim=-1)
-                    .squeeze(-1)
-                    .unsqueeze(2)
-                )
+                lls_left = self._input_cache_left.gather(index=r_idxs, dim=-1).squeeze(-1).unsqueeze(3)
+                lls_right = self._input_cache_right.gather(index=r_idxs, dim=-1).squeeze(-1).unsqueeze(2)
 
-            lls = (lls_left + lls_right).view(
-                num_samples, out_features, in_channels**2
-            )
+            lls = (lls_left + lls_right).view(num_samples, out_features, in_channels**2)
             log_prior = log_weights
             log_posterior = log_prior + lls
-            log_posterior = log_posterior - torch.logsumexp(
-                log_posterior, dim=2, keepdim=True
-            )
+            log_posterior = log_posterior - torch.logsumexp(log_posterior, dim=2, keepdim=True)
             log_weights = log_posterior
 
         # Sample/mpe from the logweights
@@ -565,9 +487,7 @@ class EinsumLayer(AbstractLayer):
                 f"but indices_repetition argument was None, expected a Long tensor size #samples."
             )
         if self.num_repetitions == 1 and context.indices_repetition is None:
-            context.indices_repetition = torch.zeros(
-                context.num_samples, dtype=torch.int, device=self.__device
-            )
+            context.indices_repetition = torch.zeros(context.num_samples, dtype=torch.int, device=self.__device)
 
     def _enable_input_cache(self):
         """Enables the input cache. This will store the input in forward passes into
@@ -581,15 +501,12 @@ class EinsumLayer(AbstractLayer):
         self._input_cache_right = None
 
     def extra_repr(self):
-        return (
-            "num_features={}, num_sums_in={}, num_sums_out={}, out_shape={}, "
-            "weights_shape={}".format(
-                self.num_features,
-                self.num_sums_in,
-                self.num_sums_out,
-                self.out_shape,
-                self.weights.shape,
-            )
+        return "num_features={}, num_sums_in={}, num_sums_out={}, out_shape={}, " "weights_shape={}".format(
+            self.num_features,
+            self.num_sums_in,
+            self.num_sums_out,
+            self.out_shape,
+            self.weights.shape,
         )
 
 
@@ -658,9 +575,7 @@ class EinsumMixingLayer(AbstractLayer):
             # Index with parent indices
             weights = weights.unsqueeze(0)  # make space for batch dim
             weights = weights.expand(num_samples, -1, -1, -1)
-            p_idxs = context.indices_out.unsqueeze(-1).unsqueeze(
-                -1
-            )  # make space for repetition dim
+            p_idxs = context.indices_out.unsqueeze(-1).unsqueeze(-1)  # make space for repetition dim
             p_idxs = p_idxs.expand(-1, -1, -1, num_sums_in)
             weights = weights.gather(dim=2, index=p_idxs)
             # Drop dim which was selected via parent indices
@@ -682,9 +597,7 @@ class EinsumMixingLayer(AbstractLayer):
             for i in range(num_samples):
                 # Reweight the i-th samples weights by its likelihood values at the correct
                 # repetition
-                log_weights[i, :, :] += self._input_cache[
-                    i, :, :, context.indices_repetition[i]
-                ]
+                log_weights[i, :, :] += self._input_cache[i, :, :, context.indices_repetition[i]]
 
         if not context.is_differentiable:
             if context.is_mpe:
@@ -716,9 +629,7 @@ class EinsumMixingLayer(AbstractLayer):
                 f"Sum layer has multiple repetitions (num_repetitions=={self.num_repetitions}) but indices_repetition argument was None, expected a Long tensor size #samples."
             )
         if self.num_repetitions == 1 and context.indices_repetition is None:
-            context.indices_repetition = torch.zeros(
-                context.num_samples, dtype=torch.int, device=self.__device
-            )
+            context.indices_repetition = torch.zeros(context.num_samples, dtype=torch.int, device=self.__device)
 
     def extra_repr(self):
         return "num_features={}, num_sums_in={}, num_sums_out={}".format(

@@ -104,6 +104,4 @@ class MultiDistributionLayer(AbstractLeaf):
         return samples
 
     def _get_base_distribution(self) -> dist.Distribution:
-        raise NotImplementedError(
-            "MultiDistributionLayer does not implement _get_base_distribution."
-        )
+        raise NotImplementedError("MultiDistributionLayer does not implement _get_base_distribution.")

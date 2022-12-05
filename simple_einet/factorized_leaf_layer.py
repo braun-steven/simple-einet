@@ -73,9 +73,7 @@ class FactorizedLeaf(AbstractLayer):
         )
         return x
 
-    def sample(
-        self, num_samples: int = None, context: SamplingContext = None
-    ) -> torch.Tensor:
+    def sample(self, num_samples: int = None, context: SamplingContext = None) -> torch.Tensor:
         # Save original indices_out and set context indices_out to none, such that the out_channel
         # are not filtered in the base_leaf sampling procedure
         indices_out = context.indices_out
@@ -124,14 +122,11 @@ class FactorizedLeaf(AbstractLayer):
             # samples_orig = samples.gather(dim=-1, index=indices_in_gather_orig)
             # samples_orig.squeeze_(-1)  # Remove num_leaves dimension
 
-
             scopes = self.scopes.unsqueeze(0)  # make space for batch dim
             r_idx = context.indices_repetition.view(context.num_samples, 1, 1, -1)
             scopes = index_one_hot(scopes, index=r_idx, dim=-1)
 
-            indices_in = index_one_hot(
-                indices_out.unsqueeze(1), index=scopes.unsqueeze(-1), dim=2
-            )
+            indices_in = index_one_hot(indices_out.unsqueeze(1), index=scopes.unsqueeze(-1), dim=2)
 
             indices_in = indices_in.unsqueeze(1)  # make space for channel dim
             samples = index_one_hot(samples, index=indices_in, dim=-1)
