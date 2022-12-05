@@ -14,8 +14,7 @@ Classification on MNIST examples:
 python main_pl.py dataset=mnist D=5 I=25 R=10 S=25 lr=0.01 dist=normal epochs=100 classification=True batch_size=1024
 ```
 
-<img src="./res/mnist_classification.png" width=400px>
-<img src="./res/mnist_train_val_test_acc.png" width=400px>
+<img src="./res/mnist_classification.png" width=400px><img src="./res/mnist_train_val_test_acc.png" width=400px>
 
 
 Generative learning on MNIST:
