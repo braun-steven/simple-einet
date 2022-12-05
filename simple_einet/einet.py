@@ -25,7 +25,7 @@ class EinetConfig:
     Class for keeping the RatSpn config. Parameter names are according to the original RatSpn paper.
 
     num_features: int  # Number of input features
-    num_features: int  # Number of input channels
+    num_channels: int  # Number of input channels
     num_sums: int  # Number of sum nodes at each layer
     num_leaves: int  # Number of distributions for each scope at the leaf layer
     num_repetitions: int  # Number of repetitions
