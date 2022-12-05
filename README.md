@@ -112,10 +112,10 @@ If you use EinsumNetworks in your publications, please cite the official EinsumN
 If you use this software, please cite it as below.
 
 ``` bibtex
-@software{lang2021simple-einet,
-author = {Lang, Steven},
+@software{braun2021simple-einet,
+author = {Braun, Steven},
 title = {{Simple-einet: An EinsumNetworks Implementation}},
-url = {https://github.com/steven-lang/simple-einet},
+url = {https://github.com/braun-steven/simple-einet},
 version = {0.0.1},
 }
 ```
