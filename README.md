@@ -11,7 +11,7 @@ The `main_pl.py` script offers PyTorch-Lightning based training for discriminati
 Classification on MNIST examples:
 
 ```sh
-$ python main_pl.py --dataset mnist -D 5 -I 50 -R 10 -S 100 --lr 0.01 --dist normal --epochs 100 --classification --gpu 0 --batch-size 1024
+python main_pl.py dataset=mnist D=5 I=25 R=10 S=25 lr=0.01 dist=normal epochs=100 classification=True batch_size=1024
 ```
 
 <img src="./res/mnist_classification.svg" width=400px>
@@ -21,7 +21,7 @@ $ python main_pl.py --dataset mnist -D 5 -I 50 -R 10 -S 100 --lr 0.01 --dist nor
 Generative learning on MNIST:
 
 ``` sh
-$ python main_pl.py --dataset mnist -D 5 -I 50 -R 10 -S 100 --lr 0.1 --dist binomial --epochs 10 --gpu 3 --batch-size 128
+python main_pl.py dataset=mnist D=3 I=10 R=1 S=10 lr=0.1 dist=binomial epochs=10 batch_size=128
 ```
 
 ![MNIST Samples]( ./res/mnist_samples.png )
