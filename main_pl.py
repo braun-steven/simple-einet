@@ -79,9 +79,15 @@ def main(cfg: DictConfig):
     ]
 
     # Setup devices
-    gpus = 1 if torch.cuda.is_available() else 0
-    accelerator = "gpu" if torch.cuda.is_available() else "cpu"
-    devices = [int(cfg.gpu)] if gpus else None
+    if torch.cuda.is_available():
+        accelerator = "gpu"
+        devices = [int(cfg.gpu)]
+    # elif torch.backends.mps.is_available():  # Currently leads to errors
+    #     accelerator = "mps"
+    #     devices = 1
+    else:
+        accelerator = "cpu"
+        devices = None
 
     # Setup callbacks
     callbacks = []
