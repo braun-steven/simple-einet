@@ -39,9 +39,7 @@ pip install -e .
 ## Usage Example
 
 ```python
-
 import torch
-from simple_einet.clipper import DistributionClipper
 from simple_einet.distributions import RatNormal
 from simple_einet.einet import Einet
 from simple_einet.einet import EinetConfig
@@ -57,12 +55,12 @@ out_features = 3
 x = torch.randn(batchsize, in_features)
 
 # Construct Einet
-einet = Einet(EinetConfig(in_features=in_features, D=2, S=2, I=2, R=3, C=out_features, dropout=0.0, leaf_base_class=RatNormal, leaf_base_kwargs={"min_sigma": 1e-5, "max_sigma": 1.0},))
+einet = Einet(EinetConfig(num_features=in_features, depth=2, num_sums=2, num_channels=1, num_leaves=3, num_repetitions=3, num_classes=out_features, dropout=0.0, leaf_type=RatNormal, leaf_kwargs={"min_sigma": 1e-5, "max_sigma": 1.0},))
 
 # Compute log-likelihoods
 lls = einet(x)
-print(f"lls={lls}")
-print(f"lls.shape={lls.shape}")
+print(f"lls.shape: {lls.shape}")
+print(f"lls: \n{lls}")
 
 # Optimize Einet parameters (weights and leaf params)
 optim = torch.optim.Adam(einet.parameters(), lr=0.001)
@@ -82,8 +80,8 @@ for _ in range(1000):
 
 # Construct samples
 samples = einet.sample(2)
-print(f"samples={samples}")
-print(f"samples.shape={samples.shape}")
+print(f"samples.shape: {samples.shape}")
+print(f"samples: \n{samples}")
 ```
 
 ## Citing EinsumNetworks
