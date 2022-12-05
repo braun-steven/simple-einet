@@ -1,0 +1,42 @@
+defaults:
+  - _self_
+  - experiment: null
+  - override hydra/job_logging: colorlog
+  - override hydra/hydra_logging: colorlog
+
+# Default set of configurations.
+data_dir: ???
+results_dir: ???
+lr: 0.1
+batch_size: 64
+n_bits: 8
+num_workers: 8
+temperature_leaves: 1.0
+temperature_sums: 1.0
+dropout: 0.0
+min_sigma: 1e-2
+max_sigma: 2.0
+dry_run: False
+seed: 1
+log_interval: 10
+classification: False
+device: "cuda"
+debug: False
+S: 10
+I: 10
+D: 3
+R: 1
+gpu: 0
+epochs: 10
+load_and_eval: False
+cp: False
+dist: "binomial"
+precision: 16
+group_tag: ???
+tag: ???
+wandb: False
+swa: False
+profiler: ???
+log_weights: False
+dataset: ???
+num_classes: 10
