@@ -1,12 +1,14 @@
 from collections import defaultdict
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List, Sequence, Type
+from operator import xor
+from typing import Any, Dict, List, Sequence, Tuple, Type
 
 import numpy as np
 import torch
 from fast_pytorch_kmeans import KMeans
 from torch import nn
+from torch.utils.data import DataLoader
 
 from simple_einet.distributions import AbstractLeaf, RatNormal, truncated_normal_
 from simple_einet.einsum_layer import EinsumLayer, EinsumMixingLayer, LinsumLayer, LinsumLayerLogWeights
@@ -156,6 +158,76 @@ class Einet(nn.Module):
         assert x.shape == (batch_size, self.config.num_classes)
 
         return x
+
+    def forward_dropout_inference(
+        self, x: torch.Tensor, marginalization_mask: torch.Tensor = None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Inference pass for the Einet model.
+
+        Args:
+          x (torch.Tensor): Input data of shape [N, C, D], where C is the number of input channels (useful for images) and D is the number of features/random variables (H*W for images).
+          marginalized_scope: torch.Tensor:  (Default value = None)
+
+        Returns:
+            Log-likelihood tensor of the input: p(X) or p(X | C) if number of classes > 1.
+        """
+
+        # Add channel dimension if not present
+        if x.dim() == 2:  # [N, D]
+            x = x.unsqueeze(1)
+
+        if x.dim() == 4:  # [N, C, H, W]
+            x = x.view(x.shape[0], self.config.num_channels, -1)
+
+        assert x.dim() == 3
+        assert x.shape[1] == self.config.num_channels
+
+        # Apply leaf distributions (replace marginalization indicators with 0.0 first)
+        x = self.leaf(x, marginalization_mask)
+
+        # Pass through intermediate layers
+        log_exp, log_var = self._forward_layers_dropout_inference(x)
+
+        # Merge results from the different repetitions into the channel dimension
+        batch_size, features, channels, repetitions = log_exp.size()
+        assert features == 1  # number of features should be 1 at this point
+        assert channels == self.config.num_classes
+
+        # If model has multiple reptitions, perform repetition mixing
+        if self.config.num_repetitions > 1:
+            # Mix repetitions
+            log_exp, log_var = self.mixing.forward_dropout_inference(log_exp, log_var)
+        else:
+            # Remove repetition index
+            log_exp = log_exp.squeeze(-1)
+            log_var = log_var.squeeze(-1)
+
+        # Remove feature dimension
+        log_exp = log_exp.squeeze(1)
+        log_var = log_var.squeeze(1)
+
+        # Final shape check
+        assert log_exp.shape == (batch_size, self.config.num_classes)
+        assert log_var.shape == (batch_size, self.config.num_classes)
+
+        return log_exp, log_var
+
+    def _forward_layers_dropout_inference(self, log_exp):
+        """
+        Forward pass through the inner sum and product layers.
+
+        Args:
+            log_exp: Input expectations.
+
+        Returns:
+            torch.Tensor: Output of the last layer before the root layer.
+        """
+        # Forward to inner product and sum layers
+        log_var = torch.ones_like(log_exp) * np.NINF
+        for layer in self.einsum_layers:
+            log_exp, log_var = layer.forward_dropout_inference(log_exp, log_var)
+        return log_exp, log_var
 
     def _forward_layers(self, x):
         """
@@ -559,7 +631,21 @@ class EinetMixture(nn.Module):
         self.centroids = nn.Parameter(torch.empty(n_components, einet_config.num_features), requires_grad=False)
 
     @torch.no_grad()
-    def initialize(self, data: torch.Tensor):
+    def initialize(self, data: torch.Tensor=None, dataloader: DataLoader=None, device=None):
+        assert xor(data is not None, dataloader is not None)
+
+        if dataloader is not None:
+            # Collect data from dataloader
+            l = []
+            for batch in dataloader:
+                x, y = batch
+                l.append(x)
+                if sum([d.shape[0] for d in l]) > 2000:
+                    break
+
+            data = torch.cat(l, dim=0).to(device)
+
+
         data = data.float()  # input has to be [n, d]
         self._kmeans.fit(data.view(data.shape[0], -1))
 

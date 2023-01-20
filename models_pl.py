@@ -1,4 +1,5 @@
 from abc import ABC
+from torch.optim.lr_scheduler import OneCycleLR
 import argparse
 import os
 from argparse import Namespace
@@ -24,7 +25,7 @@ from pytorch_lightning import seed_everything
 from pytorch_lightning.loggers import TensorBoardLogger
 
 from simple_einet.data import build_dataloader
-from simple_einet.einet import EinetConfig, Einet
+from simple_einet.einet import EinetConfig, Einet, EinetMixture
 from simple_einet.distributions.binomial import Binomial
 
 
@@ -42,6 +43,7 @@ def make_einet(cfg, num_classes: int = 1):
     Returns:
         EinsumNetworks model.
     """
+
     image_shape = get_data_shape(cfg.dataset)
     # leaf_kwargs, leaf_type = {"total_count": 255}, Binomial
     leaf_kwargs, leaf_type = get_distribution(
@@ -62,20 +64,24 @@ def make_einet(cfg, num_classes: int = 1):
         cross_product=cfg.cp,
         log_weights=cfg.log_weights,
     )
-    return Einet(config)
+    if cfg.einet_mixture:
+        return EinetMixture(n_components=num_classes, einet_config=config)
+    else:
+        return Einet(config)
 
 
 class LitModel(pl.LightningModule, ABC):
-    def __init__(self, cfg: DictConfig, name: str) -> None:
+    def __init__(self, cfg: DictConfig, name: str, steps_per_epoch: int) -> None:
         super().__init__()
         self.cfg = cfg
         self.image_shape = get_data_shape(cfg.dataset)
         self.rtpt = RTPT(
-            name_initials="SL",
+            name_initials="SB",
             experiment_name="einet_" + name + ("_" + str(cfg.tag) if cfg.tag else ""),
             max_iterations=cfg.epochs + 1,
         )
         self.save_hyperparameters()
+        self.steps_per_epoch = steps_per_epoch
 
     def preprocess(self, data: torch.Tensor):
         if self.cfg.dist == Dist.BINOMIAL:
@@ -90,6 +96,16 @@ class LitModel(pl.LightningModule, ABC):
             milestones=[int(0.7 * self.cfg.epochs), int(0.9 * self.cfg.epochs)],
             gamma=0.1,
         )
+
+        # lr_scheduler = {
+        #     "scheduler": OneCycleLR(
+        #         optimizer,
+        #         max_lr=self.cfg.lr,
+        #         total_steps=self.cfg.epochs * self.steps_per_epoch
+        #         + 1,  # +1 b/c 1cycle has a bug in its last step where it upticks the lr again
+        #     ),
+        #     "interval": "step",
+        # }
         return [optimizer], [lr_scheduler]
 
     def on_train_start(self) -> None:
@@ -100,8 +116,8 @@ class LitModel(pl.LightningModule, ABC):
 
 
 class SpnGenerative(LitModel):
-    def __init__(self, cfg: DictConfig):
-        super().__init__(cfg=cfg, name="gen")
+    def __init__(self, cfg: DictConfig, steps_per_epoch: int):
+        super().__init__(cfg=cfg, name="gen", steps_per_epoch=steps_per_epoch)
         self.spn = make_einet(cfg)
 
     def training_step(self, train_batch, batch_idx):
@@ -164,8 +180,8 @@ class SpnDiscriminative(LitModel):
     Discriminative SPN model. Models the class conditional data distribution at its C root nodes.
     """
 
-    def __init__(self, cfg: DictConfig):
-        super().__init__(cfg, name="disc")
+    def __init__(self, cfg: DictConfig, steps_per_epoch: int):
+        super().__init__(cfg, name="disc", steps_per_epoch=steps_per_epoch)
 
         # Construct SPN
         self.spn = make_einet(cfg, num_classes=10)
@@ -181,7 +197,7 @@ class SpnDiscriminative(LitModel):
 
     def validation_step(self, val_batch, batch_idx):
         loss, accuracy = self._get_cross_entropy_and_accuracy(val_batch)
-        self.log("Val/accuracy", accuracy)
+        self.log("Val/accuracy", accuracy, prog_bar=True)
         self.log("Val/loss", loss)
         return loss
 
@@ -218,5 +234,6 @@ class SpnDiscriminative(LitModel):
         # NOTE: Don't use nn.CrossEntropyLoss because it expects unnormalized logits
         # and applies LogSoftmax first
         loss = self.criterion(ll_y_g_x, labels)
+        # loss = self.criterion(ll_x_g_y, labels)
         accuracy = (labels == ll_y_g_x.argmax(-1)).sum() / ll_y_g_x.shape[0]
         return loss, accuracy

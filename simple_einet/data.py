@@ -19,6 +19,7 @@ from torchvision.transforms.functional import InterpolationMode
 
 from simple_einet.distributions import RatNormal
 from simple_einet.distributions.binomial import Binomial
+from simple_einet.distributions.normal import Normal
 
 
 @dataclass
@@ -183,6 +184,9 @@ def get_datasets(cfg, normalize: bool) -> Tuple[Dataset, Dataset, Dataset]:
 
     kwargs = dict(root=cfg.data_dir, download=True, transform=transform)
 
+    # Custom split generator with fixed seed
+    split_generator = torch.Generator().manual_seed(1)
+
     # Select the datasets
     if "synth" in dataset_name:
         # Train
@@ -218,7 +222,8 @@ def get_datasets(cfg, normalize: bool) -> Tuple[Dataset, Dataset, Dataset]:
         N_train = round(N * 0.9)
         N_val = N - N_train
         lenghts = [N_train, N_val]
-        dataset_train, dataset_val = random_split(dataset_train, lengths=lenghts)
+
+        dataset_train, dataset_val = random_split(dataset_train, lengths=lenghts, generator=split_generator)
 
     elif dataset_name == "fmnist" or dataset_name == "fmnist-28":
         if normalize:
@@ -232,7 +237,8 @@ def get_datasets(cfg, normalize: bool) -> Tuple[Dataset, Dataset, Dataset]:
         N_train = round(N * 0.9)
         N_val = N - N_train
         lenghts = [N_train, N_val]
-        dataset_train, dataset_val = random_split(dataset_train, lengths=lenghts)
+
+        dataset_train, dataset_val = random_split(dataset_train, lengths=lenghts, generator=split_generator)
 
     elif "celeba" in dataset_name:
         if normalize:
@@ -251,7 +257,8 @@ def get_datasets(cfg, normalize: bool) -> Tuple[Dataset, Dataset, Dataset]:
         N_train = round(N * 0.9)
         N_val = N - N_train
         lenghts = [N_train, N_val]
-        dataset_train, dataset_val = random_split(dataset_train, lengths=lenghts)
+
+        dataset_train, dataset_val = random_split(dataset_train, lengths=lenghts, generator=split_generator)
         dataset_test = CIFAR10(**kwargs, train=False)
 
     elif "svhn" in dataset_name:
@@ -263,7 +270,8 @@ def get_datasets(cfg, normalize: bool) -> Tuple[Dataset, Dataset, Dataset]:
 
         N = len(dataset_train.data)
         lenghts = [round(N * 0.9), round(N * 0.1)]
-        dataset_train, dataset_val = random_split(dataset_train, lengths=lenghts)
+
+        dataset_train, dataset_val = random_split(dataset_train, lengths=lenghts, generator=split_generator)
         dataset_test = SVHN(**kwargs, split="test")
 
         if dataset_name == "svhn-extra":
@@ -357,6 +365,7 @@ class Dist(str, Enum):
     """Enum for the distribution of the data."""
 
     NORMAL = "normal"
+    NORMAL_RAT = "normal_rat"
     BINOMIAL = "binomial"
 
 
@@ -375,6 +384,9 @@ def get_distribution(dist, min_sigma, max_sigma):
 
     """
     if dist == Dist.NORMAL:
+        leaf_type = Normal
+        leaf_kwargs = {}
+    elif dist == Dist.NORMAL_RAT:
         leaf_type = RatNormal
         leaf_kwargs = {"min_sigma": min_sigma, "max_sigma": max_sigma}
     elif dist == Dist.BINOMIAL:
