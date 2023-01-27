@@ -1,9 +1,9 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 authors:
-- family-names: "Lang"
+- family-names: "Braun"
   given-names: "Steven"
   orcid: "https://orcid.org/0000-0002-5627-8058"
 title: "Simple-einet: An EinsumNetworks Implementation"
 version: 0.0.1
-url: "https://github.com/steven-lang/simple-einet"
+url: "https://github.com/braun-steven/simple-einet"
