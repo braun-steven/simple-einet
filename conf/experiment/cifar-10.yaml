@@ -1,0 +1,13 @@
+# @package _global_
+
+teacher:
+  model:
+    arch: resnet18
+    cnn:
+      in_channels: 3
+
+data:
+  dataset: cifar-10
+
+langevin:
+  num_groups: 10

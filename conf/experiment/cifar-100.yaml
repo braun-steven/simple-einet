@@ -1,0 +1,15 @@
+# @package _global_
+
+teacher:
+  model:
+    arch: resnet50
+    pretrained: true
+    cnn:
+      in_channels: 3
+
+data:
+  dataset: cifar-100
+
+
+langevin:
+  num_groups: 10

@@ -1,0 +1,14 @@
+# @package _global_
+
+teacher:
+  model:
+    arch: resnet18
+    pretrained: true
+    cnn:
+      in_channels: 1
+
+data:
+  dataset: mnist-32
+
+langevin:
+  num_groups: 10
