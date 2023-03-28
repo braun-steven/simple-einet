@@ -8,3 +8,6 @@ def truncated_normal_(tensor, mean=0, std=0.1):
     ind = valid.max(-1, keepdim=True)[1]
     tensor.data.copy_(tmp.gather(-1, ind).squeeze(-1))
     tensor.data.mul_(std).add_(mean)
+
+if __name__ == '__main__':
+    pass

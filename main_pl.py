@@ -10,6 +10,7 @@ from omegaconf import DictConfig, OmegaConf, open_dict
 import os
 import sys
 from rich.traceback import install
+
 install()
 
 import hydra
@@ -112,7 +113,14 @@ def main(cfg: DictConfig):
     print("Training model...")
     # Create dataloader
     normalize = cfg.dist == Dist.NORMAL
-    train_loader, val_loader, test_loader = build_dataloader(cfg=cfg, loop=False, normalize=normalize)
+    train_loader, val_loader, test_loader = build_dataloader(
+        dataset_name=cfg.dataset,
+        data_dir=cfg.data_dir,
+        batch_size=cfg.batch_size,
+        num_workers=cfg.num_workers,
+        loop=False,
+        normalize=normalize,
+    )
 
     # Create callbacks
     cfg_container = omegaconf.OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
@@ -132,7 +140,7 @@ def main(cfg: DictConfig):
         model = load_from_checkpoint(
             run_dir,
             load_fn=SpnGenerative.load_from_checkpoint,
-            cfg=cfg,
+            args=cfg,
         )
     else:
         if cfg.classification:
@@ -161,7 +169,6 @@ def main(cfg: DictConfig):
     #     summary.layer_names.index("spn.einsum_layers")
     # ]
 
-
     # Setup callbacks
     callbacks = []
 
@@ -171,7 +178,9 @@ def main(cfg: DictConfig):
         callbacks.append(swa_callback)
 
     # Enable rich progress bar
-    callbacks.append(RichProgressBar())
+    if not cfg.debug:
+        # Cannot "breakpoint()" in the training loop when RichProgressBar is active
+        callbacks.append(RichProgressBar())
 
     # Create trainer
     trainer = pl.Trainer(
@@ -186,6 +195,7 @@ def main(cfg: DictConfig):
         profiler=cfg.profiler,
         default_root_dir=run_dir,
         enable_checkpointing=False,
+        detect_anomaly=True
     )
 
     if not cfg.load_and_eval:
@@ -240,7 +250,7 @@ def preprocess_cfg(cfg: DictConfig):
         cfg.group_tag = None
 
     if "seed" not in cfg:
-        cfg.env.seed = int(time.time())
+        cfg.seed = int(time.time())
 
     if cfg.K > 0:
         cfg.I = cfg.K
