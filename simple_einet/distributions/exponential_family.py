@@ -4,6 +4,8 @@ from torch.nn.functional import multilabel_soft_margin_loss
 # from utils import one_hot
 from typing import Dict, List
 
+from utils import get_context
+
 
 class ExponentialFamilyArray(torch.nn.Module):
     """
@@ -158,30 +160,30 @@ class ExponentialFamilyArray(torch.nn.Module):
         """
         raise NotImplementedError
 
-    def _sample(self, num_samples, params, **kwargs):
+    def _sample(self, num_samples, params, differentiable=False, **kwargs):
         """
         Helper function for sampling the exponential family.
 
         :param num_samples: number of samples to be produced
         :param params: expectation parameters (phi) of the exponential family, of shape
-                       (self.num_features, *self.array_shape, self.num_stats)
+                       (self.num_var, *self.array_shape, self.num_stats)
         :param kwargs: keyword arguments
                Depending on the implementation, kwargs can also contain further arguments.
         :return: i.i.d. samples of the exponential family (Tensor).
-                 Should be of shape (num_samples, self.num_features, self.num_channels, *self.array_shape)
+                 Should be of shape (num_samples, self.num_var, self.num_channels, *self.array_shape)
         """
         raise NotImplementedError
 
-    def _argmax(self, params, **kwargs):
+    def _argmax(self, params, differentiable=False, **kwargs):
         """
         Helper function for getting the argmax of the exponential family.
 
         :param params: expectation parameters (phi) of the exponential family, of shape
-                       (self.num_features, *self.array_shape, self.num_stats)
+                       (self.num_var, *self.array_shape, self.num_stats)
         :param kwargs: keyword arguments
                Depending on the implementation, kwargs can also contain further arguments.
         :return: argmax of the exponential family (Tensor).
-                 Should be of shape (self.num_features, self.num_channels, *self.array_shape)
+                 Should be of shape (self.num_var, self.num_channels, *self.array_shape)
         """
         raise NotImplementedError
 
@@ -250,7 +252,9 @@ class ExponentialFamilyArray(torch.nn.Module):
 
         # compute the exponential family tensor
         # (batch_size, self.num_features, *self.array_shape)
-        self.ll = log_h + (theta.unsqueeze(0) * self.suff_stats).sum(-1) - log_normalizer
+        self.ll = (
+            log_h + (theta.unsqueeze(0) * self.suff_stats).sum(-1) - log_normalizer
+        )
 
         if marginalized_scopes is not None:
             self.ll.data[:, marginalized_scopes] = 0.0
@@ -263,21 +267,26 @@ class ExponentialFamilyArray(torch.nn.Module):
 
         return outputs
 
-    def sample(self, num_samples=1, **kwargs):
+    def sample(self, num_samples=1, differentiable=False, **kwargs):
         if self._use_em:
             params = self.params
         else:
-            with torch.no_grad():
+            with get_context(differentiable):
                 params = self.reparam(self.params)
-        return self._sample(num_samples, params, **kwargs)
+        return self._sample(
+            num_samples=num_samples,
+            params=params,
+            differentiable=differentiable,
+            **kwargs
+        )
 
-    def argmax(self, **kwargs):
+    def argmax(self, differentiable=False, **kwargs):
         if self._use_em:
             params = self.params
         else:
-            with torch.no_grad():
+            with get_context(differentiable):
                 params = self.reparam(self.params)
-        return self._argmax(params, **kwargs)
+        return self._argmax(params=params, differentiable=differentiable, **kwargs)
 
     def em_set_hyperparams(self, online_em_frequency, online_em_stepsize, purge=True):
         """Set new setting for online EM."""
@@ -351,7 +360,7 @@ class ExponentialFamilyArray(torch.nn.Module):
             self.ll.grad.zero_()
 
             self.params.data = (1.0 - stepsize) * self.params + stepsize * (
-                    weighted_stats / (p.unsqueeze(-1) + 1e-12)
+                weighted_stats / (p.unsqueeze(-1) + 1e-12)
             )
 
             if marginalized_scopes is not None:
@@ -380,7 +389,13 @@ class NormalArray(ExponentialFamilyArray):
     """Implementation of Normal distribution."""
 
     def __init__(
-            self, num_features, num_channels, array_shape, min_var=0.0001, max_var=10.0, use_em=True
+        self,
+        num_features,
+        num_channels,
+        array_shape,
+        min_var=0.0001,
+        max_var=10.0,
+        use_em=True,
     ):
         super(NormalArray, self).__init__(
             num_features, num_channels, array_shape, 2 * num_channels, use_em=use_em
@@ -392,26 +407,26 @@ class NormalArray(ExponentialFamilyArray):
     def default_initializer(self):
         phi = torch.empty(self.num_features, *self.array_shape, 2 * self.num_channels)
         with torch.no_grad():
-            phi[..., 0: self.num_channels] = torch.randn(
+            phi[..., 0 : self.num_channels] = torch.randn(
                 self.num_features, *self.array_shape, self.num_channels
             )
-            phi[..., self.num_channels:] = 1.0 + phi[..., 0: self.num_channels] ** 2
+            phi[..., self.num_channels :] = 1.0 + phi[..., 0 : self.num_channels] ** 2
         return phi
 
     def project_params(self, phi):
         phi_project = phi.clone()
-        mu2 = phi_project[..., 0: self.num_channels] ** 2
-        phi_project[..., self.num_channels:] -= mu2
-        phi_project[..., self.num_channels:] = torch.clamp(
-            phi_project[..., self.num_channels:], self.min_var, self.max_var
+        mu2 = phi_project[..., 0 : self.num_channels] ** 2
+        phi_project[..., self.num_channels :] -= mu2
+        phi_project[..., self.num_channels :] = torch.clamp(
+            phi_project[..., self.num_channels :], self.min_var, self.max_var
         )
-        phi_project[..., self.num_channels:] += mu2
+        phi_project[..., self.num_channels :] += mu2
         return phi_project
 
     def reparam(self, params):
-        mu = params[..., 0: self.num_channels].clone()
-        var = self.min_var + torch.sigmoid(params[..., self.num_channels:]) * (
-                self.max_var - self.min_var
+        mu = params[..., 0 : self.num_channels].clone()
+        var = self.min_var + torch.sigmoid(params[..., self.num_channels :]) * (
+            self.max_var - self.min_var
         )
         return torch.cat((mu, var + mu ** 2), -1)
 
@@ -425,42 +440,44 @@ class NormalArray(ExponentialFamilyArray):
         return stats
 
     def expectation_to_natural(self, phi):
-        var = phi[..., self.num_channels:] - phi[..., 0: self.num_channels] ** 2
-        theta1 = phi[..., 0: self.num_channels] / var
+        var = phi[..., self.num_channels :] - phi[..., 0 : self.num_channels] ** 2
+        theta1 = phi[..., 0 : self.num_channels] / var
         theta2 = -1.0 / (2.0 * var)
         return torch.cat((theta1, theta2), -1)
 
     def log_normalizer(self, theta):
-        log_normalizer = -theta[..., 0: self.num_channels] ** 2 / (
-                4 * theta[..., self.num_channels:]
-        ) - 0.5 * torch.log(-2.0 * theta[..., self.num_channels:])
+        log_normalizer = -theta[..., 0 : self.num_channels] ** 2 / (
+            4 * theta[..., self.num_channels :]
+        ) - 0.5 * torch.log(-2.0 * theta[..., self.num_channels :])
         log_normalizer = torch.sum(log_normalizer, -1)
         return log_normalizer
 
     def log_h(self, x):
         return -0.5 * self.log_2pi * self.num_channels
 
-    def _sample(self, num_samples, params, temperature=1.0):
-        with torch.no_grad():
-            mu = params[..., 0: self.num_channels]
-            var = params[..., self.num_channels:] - mu ** 2
+    def _sample(self, num_samples, params, differentiable=False, std_correction=1.0):
+        with get_context(differentiable):
+            mu = params[..., 0 : self.num_channels]
+            var = params[..., self.num_channels :] - mu ** 2
             std = torch.sqrt(var)
             shape = (num_samples,) + mu.shape
-            samples = mu.unsqueeze(0) + temperature * std.unsqueeze(0) * torch.randn(
+            samples = mu.unsqueeze(0) + std_correction * std.unsqueeze(0) * torch.randn(
                 shape, dtype=mu.dtype, device=mu.device
             )
-            return shift_last_axis_to(samples, 2)
+        return shift_last_axis_to(samples, 2)
 
-    def _argmax(self, params, **kwargs):
-        with torch.no_grad():
-            mu = params[..., 0: self.num_channels]
-            return shift_last_axis_to(mu, 1)
+    def _argmax(self, params, differentiable=False, **kwargs):
+        with get_context(differentiable):
+            mu = params[..., 0 : self.num_channels]
+        return shift_last_axis_to(mu, 1)
 
 
 class BinomialArray(ExponentialFamilyArray):
     """Implementation of Binomial distribution."""
 
-    def __init__(self, num_features, num_channels, array_shape, total_count, use_em=True):
+    def __init__(
+        self, num_features, num_channels, array_shape, total_count, use_em=True
+    ):
         super(BinomialArray, self).__init__(
             num_features, num_channels, array_shape, num_channels, use_em=use_em
         )
@@ -468,8 +485,9 @@ class BinomialArray(ExponentialFamilyArray):
 
     def default_initializer(self):
         phi = (
-                      0.01 + 0.98 * torch.rand(self.num_features, *self.array_shape, self.num_channels)
-              ) * self.total_count
+            0.01
+            + 0.98 * torch.rand(self.num_features, *self.array_shape, self.num_channels)
+        ) * self.total_count
         return phi
 
     def project_params(self, phi):
@@ -500,40 +518,47 @@ class BinomialArray(ExponentialFamilyArray):
             return torch.zeros([], device=x.device)
         else:
             log_h = (
-                    torch.lgamma(self.total_count + 1.0)
-                    - torch.lgamma(x + 1.0)
-                    - torch.lgamma(self.total_count + 1.0 - x)
+                torch.lgamma(self.total_count + 1.0)
+                - torch.lgamma(x + 1.0)
+                - torch.lgamma(self.total_count + 1.0 - x)
             )
             if len(x.shape) == 3:
                 log_h = log_h.sum(-1)
             return log_h
 
     def _sample(
-            self, num_samples, params, dtype=torch.float32, memory_efficient_binomial_sampling=True
+        self,
+        num_samples,
+        params,
+        differentiable=False,
+        dtype=torch.float32,
+        memory_efficient_binomial_sampling=True,
     ):
-        with torch.no_grad():
+        with get_context(differentiable):
             params = params / self.total_count
             if memory_efficient_binomial_sampling:
                 samples = torch.zeros(
                     (num_samples,) + params.shape, dtype=dtype, device=params.device
                 )
                 for n in range(int(self.total_count)):
-                    rand = torch.rand((num_samples,) + params.shape, device=params.device)
+                    rand = torch.rand(
+                        (num_samples,) + params.shape, device=params.device
+                    )
                     samples += (rand < params).type(dtype)
             else:
                 rand = torch.rand(
                     (num_samples,) + params.shape + (int(self.total_count),), device=params.device
                 )
                 samples = torch.sum(rand < params.unsqueeze(-1), -1).type(dtype)
-            return shift_last_axis_to(samples, 2)
+        return shift_last_axis_to(samples, 2)
 
-    def _argmax(self, params, dtype=torch.float32):
-        with torch.no_grad():
+    def _argmax(self, params, differentiable=False, dtype=torch.float32):
+        with get_context(differentiable):
             params = params / self.total_count
-            mode = torch.clamp(
-                torch.floor((self.total_count + 1.0) * params), 0.0, self.total_count
-            ).type(dtype)
-            return shift_last_axis_to(mode, 1)
+            mode = torch.clamp(torch.floor((self.total_count + 1.0) * params), 0.0, self.total_count).type(
+                dtype
+            )
+        return shift_last_axis_to(mode, 1)
 
 
 class CategoricalArray(ExponentialFamilyArray):
@@ -553,10 +578,14 @@ class CategoricalArray(ExponentialFamilyArray):
 
     def project_params(self, phi):
         """Note that this is not actually l2-projection. For simplicity, we simply renormalize."""
-        phi = phi.reshape(self.num_features, *self.array_shape, self.num_channels, self.K)
+        phi = phi.reshape(
+            self.num_features, *self.array_shape, self.num_channels, self.K
+        )
         phi = torch.clamp(phi, min=1e-12)
         phi = phi / torch.sum(phi, -1, keepdim=True)
-        return phi.reshape(self.num_features, *self.array_shape, self.num_channels * self.K)
+        return phi.reshape(
+            self.num_features, *self.array_shape, self.num_channels * self.K
+        )
 
     def reparam(self, params):
         return torch.nn.functional.softmax(params, -1)
@@ -574,9 +603,13 @@ class CategoricalArray(ExponentialFamilyArray):
 
     def expectation_to_natural(self, phi):
         theta = torch.clamp(phi, 1e-12, 1.0)
-        theta = theta.reshape(self.num_features, *self.array_shape, self.num_channels, self.K)
+        theta = theta.reshape(
+            self.num_features, *self.array_shape, self.num_channels, self.K
+        )
         theta /= theta.sum(-1, keepdim=True)
-        theta = theta.reshape(self.num_features, *self.array_shape, self.num_channels * self.K)
+        theta = theta.reshape(
+            self.num_features, *self.array_shape, self.num_channels * self.K
+        )
         theta = torch.log(theta)
         return theta
 
@@ -586,16 +619,22 @@ class CategoricalArray(ExponentialFamilyArray):
     def log_h(self, x):
         return torch.zeros([], device=x.device)
 
-    def _sample(self, num_samples, params, dtype=torch.float32):
-        with torch.no_grad():
-            dist = params.reshape(self.num_features, *self.array_shape, self.num_channels, self.K)
+    def _sample(self, num_samples, params, differentiable=False, dtype=torch.float32):
+        with get_context(differentiable):
+            dist = params.reshape(
+                self.num_var, *self.array_shape, self.num_channels, self.K
+            )
             cum_sum = torch.cumsum(dist[..., 0:-1], -1)
-            rand = torch.rand((num_samples,) + cum_sum.shape[0:-1] + (1,), device=cum_sum.device)
+            rand = torch.rand(
+                (num_samples,) + cum_sum.shape[0:-1] + (1,), device=cum_sum.device
+            )
             samples = torch.sum(rand > cum_sum, -1).type(dtype)
             return shift_last_axis_to(samples, 2)
 
-    def _argmax(self, params, dtype=torch.float32):
-        with torch.no_grad():
-            dist = params.reshape(self.num_features, *self.array_shape, self.num_channels, self.K)
+    def _argmax(self, params, differentiable=False, dtype=torch.float32):
+        with get_context(differentiable):
+            dist = params.reshape(
+                self.num_var, *self.array_shape, self.num_channels, self.K
+            )
             mode = torch.argmax(dist, -1).type(dtype)
             return shift_last_axis_to(mode, 1)

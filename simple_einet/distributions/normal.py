@@ -23,13 +23,12 @@ class Normal(AbstractLeaf):
         self.means = nn.Parameter(
             torch.randn(1, num_channels, num_features, num_leaves, num_repetitions)
         )
-        self.stds = nn.Parameter(
+        self.log_stds = nn.Parameter(
             torch.rand(1, num_channels, num_features, num_leaves, num_repetitions)
         )
-        self.gauss = dist.Normal(loc=self.means, scale=self.stds)
 
     def _get_base_distribution(self):
-        return self.gauss
+        return dist.Normal(loc=self.means, scale=self.log_stds.exp())
 
 
 class RatNormal(AbstractLeaf):

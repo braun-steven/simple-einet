@@ -2,13 +2,26 @@ from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from typing import Tuple
 
+from torch.nn import functional as F
 import numpy as np
 import torch
 from scipy.stats import rankdata
 from torch import Tensor, nn
 from tqdm.std import tqdm
 
-
+# Assert that torch.einsum broadcasting is available check for torch version >= 1.8.0
+try:
+    __TORCHVERSION = [int(v) for v in torch.__version__.split(".")]
+    __V_MAJOR = __TORCHVERSION[0]
+    __V_MINOR = __TORCHVERSION[1]
+    if __V_MAJOR == 0:
+        __HAS_EINSUM_BROADCASTING = False
+    elif __V_MAJOR == 1 and __V_MINOR < 8:
+        __HAS_EINSUM_BROADCASTING = False
+    else:
+        __HAS_EINSUM_BROADCASTING = True
+except:
+    __HAS_EINSUM_BROADCASTING = False
 
 @contextmanager
 def provide_evidence(
@@ -235,30 +248,97 @@ def rdc(x, y, f=np.sin, k=20, s=1 / 6.0, n=1):
     return np.sqrt(np.max(eigs))
 
 
-if __name__ == '__main__':
+def get_context(differentiable):
+    """
+    Get a noop context if differentiable, else torch.no_grad.
 
-    from data import get_dataset
-    dataset = get_dataset(dataset_name="mnist", data_dir="/home/tak/data", train=True)
-    data = dataset.data.view(dataset.data.shape[0], -1)
-    D = data.shape[1]
-    for i in range(10):
-        # idx_x = torch.randperm(D)[:D // 2]
-        # idx_y = [i for i in range(D) if i not in idx_x]
+    Args:
+      differentiable: If the context should allow gradients or not.
 
-        # digit_x = 0
-        # digit_y = 1
-        # mask_x = dataset.targets == digit_x
-        # mask_y = dataset.targets == digit_y
+    Returns:
+      nullcontext if differentialbe=False, else torch.no_grad
 
-        # x = data[mask_x][:4000, idx_x].numpy()
-        # y = data[mask_y][:4000, idx_y].numpy()
-        x = data[:1000].numpy()
-
-        coeffs = np.zeros((D, D))
-
-        for i in tqdm(range(D)):
-            for j in range(D):
-                coeffs[i, j] = rdc(x[:, i], x[:, j], k=1)
+    """
+    if differentiable:
+        return nullcontext()
+    else:
+        return torch.no_grad()
 
 
-        print(coeffs)
+def diff_sample_one_hot(logits: torch.Tensor, dim: int, mode: str) -> torch.Tensor:
+    """
+    Perform differentiable sampling/mpe on the given input along a specific dimension.
+
+    Modes:
+    - "sample": Perform sampling
+    - "argmax": Perform mpe
+
+    Args:
+      logits(torch.Tensor): Logits from which the sampling should be done.
+      dim(int): Dimension along which to sample from.
+      mode(str): Mode as described above.
+
+    Returns:
+      torch.Tensor: Indices encoded as one-hot tensor along the given dimension `dim`.
+
+    """
+    if mode == "sample":
+        return F.gumbel_softmax(logits=logits, hard=False, dim=dim)
+    elif mode == "argmax":
+        # Differentiable argmax (see gumbel softmax trick code)
+        y_soft = logits.softmax(dim)
+        index = y_soft.max(dim, keepdim=True)[1]
+        y_hard = torch.zeros_like(
+            logits, memory_format=torch.legacy_contiguous_format
+        ).scatter_(dim, index, 1.0)
+        ret = y_hard - y_soft.detach() + y_soft
+        return ret
+    else:
+        raise Exception(
+            f"Invalid mode option (got {mode}). Must be either 'sample' or 'argmax'."
+        )
+
+def index_one_hot(tensor: torch.Tensor, index: torch.Tensor, dim:int) -> torch.Tensor:
+    """
+    Index into a given tensor unsing a one-hot encoded index tensor at a specific dimension.
+
+    Example:
+
+    Given array "x = [3 7 5]" and index "2", "x[2]" should return "5".
+
+    Here, index "2" should be one-hot encoded: "2 = [0 0 1]" which we use to
+    elementwise multiply the original tensor and then sum up the masked result.
+
+    sum([3 7 5] * [0 1 0]) == sum([0 0 5]) == 5
+
+    The implementation is equivalent to
+
+        torch.sum(tensor * index, dim)
+
+    but uses the einsum operation to reduce the number of operations from two to one.
+
+    Args:
+      tensor(torch.Tensor): Tensor which shall be indexed.
+      index(torch.Tensor): Indexing tensor.
+      dim(int): Dimension at which the tensor should be used index.
+
+    Returns:
+      torch.Tensor: Indexed tensor.
+
+    """
+    assert tensor.shape[dim] == index.shape[dim], f"Tensor and index at indexing dimension must be the same size but was tensor.shape[{dim}]={tensor.shape[dim]} and index.shape[{dim}]={index.shape[dim]}"
+
+    assert tensor.dim() == index.dim(), f"Tensor and index number of dimensions must be the same but was tensor.dim()={tensor.dim()} and index.dim()={index.dim()}"
+
+    if __HAS_EINSUM_BROADCASTING:
+        num_dims = tensor.dim()
+        dims = "abcdefghijklmnopqrstuvwxyz"[:num_dims]
+        dims_without = dims[:dim] + dims[dim + 1:]
+        einsum_str = f"{dims},{dims}->{dims_without}"
+        # print(f"tensor.shape: {tensor.shape}")
+        # print(f"index.shape:  {index.shape}")
+        # print(f"einsum_str:  {einsum_str}")
+        # print(f"dim={dim}")
+        return torch.einsum(einsum_str, tensor, index)
+    else:
+        return torch.sum(tensor * index, dim=dim)

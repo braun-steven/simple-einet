@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import torch
 from rich.traceback import install
-from simple_einet.distributions.exponential_family import BinomialArray
+from simple_einet.distributions.exponential_family import BinomialArray, NormalArray
 import tqdm
 import torch.autograd.profiler as profiler
 
@@ -13,7 +13,6 @@ from args import parse_args
 from simple_einet.data import build_dataloader, get_data_shape
 from simple_einet.utils import calc_bpd, preprocess
 
-install()
 # install(suppress=[torch])
 import os
 from typing import Union
@@ -83,7 +82,6 @@ def train(args, model: Union[Einet, EinetMixture], device, train_loader, optimiz
 
         # Compute gradients
         loss.backward()
-        breakpoint()
 
 
         # Update weights
@@ -203,10 +201,12 @@ if __name__ == "__main__":
         num_repetitions=args.R,
         num_classes=num_classes,
         # leaf_type=Binomial,
-        leaf_type=BinomialArray,
-        leaf_kwargs={"total_count": n_bins - 1},
+        # leaf_type=BinomialArray,
+        # leaf_kwargs={"total_count": n_bins - 1},
+        leaf_type=NormalArray,
+        leaf_kwargs={"min_var": 1e-3, "max_var": 1.0},
         dropout=0.0,
-        use_em=True,
+        use_em=False,
         em_stepsize=0.05,
         em_frequency=1,
     )
@@ -375,4 +375,3 @@ if __name__ == "__main__":
 
         print(f"Result directory: {result_dir}")
         print("Done.")
-

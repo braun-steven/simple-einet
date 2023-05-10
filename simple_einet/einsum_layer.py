@@ -1,12 +1,13 @@
-from typing import Tuple, Union
-import torch.nn.functional as F
-import numpy as np
-from torch import nn
-import torch
+from typing import Union
 
-from simple_einet.utils import SamplingContext
-from simple_einet.type_checks import check_valid
+import numpy as np
+import torch
+import torch.nn.functional as F
+from torch import nn
+
 from simple_einet.layers import AbstractLayer
+from simple_einet.type_checks import check_valid
+from simple_einet.utils import SamplingContext, index_one_hot
 
 
 class EinsumLayer(AbstractLayer):
@@ -25,7 +26,9 @@ class EinsumLayer(AbstractLayer):
         self.num_sums_out = check_valid(num_sums_out, int, 1)
         cardinality = 2  # Fixed to binary graphs for now
         self.cardinality = check_valid(cardinality, int, 2, num_features + 1)
-        self.num_features_out = np.ceil(self.num_features / self.cardinality).astype(int)
+        self.num_features_out = np.ceil(self.num_features / self.cardinality).astype(
+            int
+        )
         self._pad = 0
 
         # Weights, such that each sumnode has its own weights
@@ -49,13 +52,19 @@ class EinsumLayer(AbstractLayer):
         # Create index map from flattened to coordinates (only needed in sampling)
         self.unraveled_channel_indices = nn.Parameter(
             torch.tensor(
-                [(i, j) for i in range(self.num_sums_in) for j in range(self.num_sums_in)]
+                [
+                    (i, j)
+                    for i in range(self.num_sums_in)
+                    for j in range(self.num_sums_in)
+                ]
             ),
             requires_grad=False,
         )
 
         # Dropout
-        self.dropout = check_valid(dropout, expected_type=float, lower_bound=0.0, upper_bound=1.0)
+        self.dropout = check_valid(
+            dropout, expected_type=float, lower_bound=0.0, upper_bound=1.0
+        )
         self._bernoulli_dist = torch.distributions.Bernoulli(probs=self.dropout)
 
         # Necessary for sampling with evidence: Save input during forward pass.
@@ -120,29 +129,61 @@ class EinsumLayer(AbstractLayer):
         return prob
 
     def sample(
-        self, num_samples: int, context: SamplingContext
+        self, num_samples: int, context: SamplingContext, differentiable=False
     ) -> Union[SamplingContext, torch.Tensor]:
 
         # Sum weights are of shape: [D, IC//2, IC//2, OC, R]
         # We now want to use `indices` to access one in_channel for each in_feature x out_channels block
         # index is of size in_feature
         weights = self.weights
-        in_features, out_channels, num_repetitions, in_channels, in_channels = weights.shape
+        (
+            in_features,
+            out_channels,
+            num_repetitions,
+            in_channels,
+            in_channels,
+        ) = weights.shape
         num_samples = context.num_samples
 
         self._check_indices_repetition(context)
 
-        tmp = torch.zeros(num_samples, in_features, in_channels, in_channels, device=weights.device)
-        for i in range(num_samples):
-            tmp[i, :, :, :] = weights[
-                range(in_features),
-                context.indices_out[i],  # access the chosen output sum node
-                context.indices_repetition[i],  # access the chosen repetition
-                :,
-                :,
-            ]
+        if not differentiable:
+            # Index sums_out
+            weights = weights.unsqueeze(0)  # make space for batch dim
+            weights = weights.expand(num_samples, -1, -1, -1, -1, -1)
+            p_idxs = context.indices_out[
+                ..., None, None, None, None
+            ]  # make space for repetition dim
+            p_idxs = p_idxs.expand(
+                -1, -1, -1, num_repetitions, in_channels, in_channels
+            )
+            weights = weights.gather(dim=2, index=p_idxs)
+            weights = weights.squeeze(2)
 
-        weights = tmp
+            # Index repetitions
+            r_idxs = context.indices_repetition[..., None, None, None, None]
+            r_idxs = r_idxs.expand(-1, in_features, -1, in_channels, in_channels)
+            weights = weights.gather(dim=2, index=r_idxs)
+            weights = weights.squeeze(2)
+        else:
+            # Index sums_out
+            weights = weights.unsqueeze(0)  # make space for batch dim
+            weights = weights.expand(num_samples, -1, -1, -1, -1, -1)
+            p_idxs = context.indices_out[
+                ..., None, None, None, None
+            ]  # make space for repetition dim
+            p_idxs = p_idxs.expand(
+                -1, -1, -1, num_repetitions, in_channels, in_channels
+            )
+            # weights = weights.gather(dim=2, index=p_idxs)
+            weights = index_one_hot(weights, index=p_idxs, dim=2)  # TODO: is 2 correct?
+            weights = weights.squeeze(2)
+
+            # Index repetitions
+            r_idxs = context.indices_repetition[..., None, None, None, None]
+            r_idxs = r_idxs.expand(-1, in_features, -1, in_channels, in_channels)
+            weights = weights.gather(dim=2, index=r_idxs)
+            weights = weights.squeeze(2)
 
         # Check dimensions
         assert weights.shape == (num_samples, in_features, in_channels, in_channels)
@@ -158,18 +199,22 @@ class EinsumLayer(AbstractLayer):
 
         # If evidence is given, adjust the weights with the likelihoods of the observed paths
         if self._is_input_cache_enabled and self._input_cache_left is not None:
+            # TODO: make this parallel with torch.gather (see weight indexing above)
+            # Check simple-einet-diff-sampling for a working implementation
             for i in range(num_samples):
                 # Reweight the i-th samples weights by its likelihood values at the correct repetition
-                lls_left = self._input_cache_left[i, :, :, context.indices_repetition[i]].unsqueeze(
-                    2
-                )
+                lls_left = self._input_cache_left[
+                    i, :, :, context.indices_repetition[i]
+                ].unsqueeze(2)
                 lls_right = self._input_cache_right[
                     i, :, :, context.indices_repetition[i]
                 ].unsqueeze(1)
                 lls = (lls_left + lls_right).view(in_features, in_channels ** 2)
                 log_prior = log_weights[i, :, :]
                 log_posterior = log_prior + lls
-                log_posterior = log_posterior - torch.logsumexp(log_posterior, 1, keepdim=True)
+                log_posterior = log_posterior - torch.logsumexp(
+                    log_posterior, 1, keepdim=True
+                )
                 log_weights[i] = log_posterior
 
         if context.is_mpe:
@@ -193,7 +238,9 @@ class EinsumLayer(AbstractLayer):
     def em_update(self, stepsize: float):
         if not self.use_em:
             raise AssertionError("em_update called while _use_em==False.")
-        em_update(self.weights, stepsize=stepsize, normalization_dims=self.normalization_dims)
+        em_update(
+            self.weights, stepsize=stepsize, normalization_dims=self.normalization_dims
+        )
 
     def _check_indices_repetition(self, context: SamplingContext):
         assert context.indices_repetition.shape[0] == context.indices_out.shape[0]
@@ -203,7 +250,7 @@ class EinsumLayer(AbstractLayer):
             )
         if self.num_repetitions == 1 and context.indices_repetition is None:
             context.indices_repetition = torch.zeros(
-                context.num_samples, dtype=int, device=self.__device
+                context.num_samples, dtype=torch.int, device=self.__device
             )
 
     def _enable_input_cache(self):
@@ -282,7 +329,10 @@ class EinsumMixingLayer(AbstractLayer):
         return lls
 
     def sample(
-        self, num_samples: int = None, context: SamplingContext = None
+        self,
+        num_samples: int = None,
+        context: SamplingContext = None,
+        differentiable=False,
     ) -> Union[SamplingContext, torch.Tensor]:
         # Sum weights are of shape: [W, H, IC, OC, R]
         # We now want to use `indices` to access one in_channel for each in_feature x num_sums_out block
@@ -294,14 +344,19 @@ class EinsumMixingLayer(AbstractLayer):
 
         self._check_indices_repetition(context)
 
-        # Index with parent indices
-        weights = weights.unsqueeze(0)  # make space for batch dim
-        weights = weights.expand(num_samples, -1, -1, -1)
-        p_idxs = context.indices_out.unsqueeze(-1).unsqueeze(-1)  # make space for repetition dim
-        p_idxs = p_idxs.expand(-1, -1, -1, num_sums_in)
-        weights = weights.gather(dim=2, index=p_idxs)
-        # Drop dim which was selected via parent indices
-        weights = weights.squeeze(2)
+        if not differentiable:
+            # Index with parent indices
+            weights = weights.unsqueeze(0)  # make space for batch dim
+            weights = weights.expand(num_samples, -1, -1, -1)
+            p_idxs = context.indices_out.unsqueeze(-1).unsqueeze(
+                -1
+            )  # make space for repetition dim
+            p_idxs = p_idxs.expand(-1, -1, -1, num_sums_in)
+            weights = weights.gather(dim=2, index=p_idxs)
+            # Drop dim which was selected via parent indices
+            weights = weights.squeeze(2)
+        else:
+            ...  # TODO
 
         # Check dimensions
         assert weights.shape == (num_samples, in_features, num_sums_in)
@@ -316,7 +371,9 @@ class EinsumMixingLayer(AbstractLayer):
             # TODO: parallelize this with torch.gather
             for i in range(num_samples):
                 # Reweight the i-th samples weights by its likelihood values at the correct repetition
-                log_weights[i, :, :] += self._input_cache[i, :, :, context.indices_repetition[i]]
+                log_weights[i, :, :] += self._input_cache[
+                    i, :, :, context.indices_repetition[i]
+                ]
 
         if context.is_mpe:
             indices = log_weights.argmax(dim=2)
@@ -337,7 +394,7 @@ class EinsumMixingLayer(AbstractLayer):
             )
         if self.num_repetitions == 1 and context.indices_repetition is None:
             context.indices_repetition = torch.zeros(
-                context.num_samples, dtype=int, device=self.__device
+                context.num_samples, dtype=torch.int, device=self.__device
             )
 
     def extra_repr(self):
@@ -352,7 +409,9 @@ class EinsumMixingLayer(AbstractLayer):
     def em_update(self, stepsize: float):
         if not self.use_em:
             raise AssertionError("em_update called while _use_em==False.")
-        em_update(self.weights, stepsize=stepsize, normalization_dims=self.normalization_dims)
+        em_update(
+            self.weights, stepsize=stepsize, normalization_dims=self.normalization_dims
+        )
 
 
 def em_purge(weights: torch.Tensor):
@@ -367,7 +426,6 @@ def em_update(weights, stepsize, normalization_dims):
     Do an EM update. If the setting is online EM (online_em_stepsize is not None), then this function does nothing,
     since updates are triggered automatically. Thus, leave the private parameter _triggered alone.
 
-    :param _triggered: for internal use, don't set
     :return: None
     """
 
@@ -381,3 +439,18 @@ def em_update(weights, stepsize, normalization_dims):
         weights.data = torch.clamp(weights, 1e-16)
         weights.data = weights / (weights.sum(normalization_dims, keepdim=True))
         weights.grad = None
+
+
+if __name__ == "__main__":
+    sumlayer = EinsumLayer(
+        num_features=8, num_sums_in=25, num_sums_out=7, num_repetitions=3
+    )
+    num_samples = 1
+    ctx = SamplingContext(
+        num_samples=num_samples,
+        indices_out=torch.randint(low=0, high=7, size=(num_samples, 4)),
+        indices_repetition=torch.randint(low=0, high=3, size=(num_samples,)),
+    )
+    print(ctx)
+    ctx = sumlayer.sample(1, ctx, differentiable=True)
+    print(ctx)

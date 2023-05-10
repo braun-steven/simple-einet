@@ -67,8 +67,8 @@ def get_data_shape(dataset_name: str) -> Tuple[int, int, int]:
         Tuple[int, int, int]: Tuple of [channels, height, width].
     """
     return {
-        "mnist": (1, 28, 28),
-        "fmnist": (1, 28, 28),
+        "mnist": (1, 32, 32),
+        "fmnist": (1, 32, 32),
         "cmnist": (3, 28, 28),
         "cifar": (3, 32, 32),
         "svhn": (3, 32, 32),
@@ -111,13 +111,16 @@ def get_dataset(dataset_name: str, data_dir: str, train: bool) -> Dataset:
         transform.transforms.pop(2)  # Remove hflip
         dataset = MNIST(**kwargs, train=train)
 
-        # digits = [2]
-        # mask = torch.zeros_like(dataset.targets).bool()
-        # for digit in digits:
-        #     mask = mask | (dataset.targets == digit)
+        # dataset.data = dataset.data[:1]
+        # dataset.targets = dataset.targets[:1]
 
-        # dataset.data = dataset.data[mask]
-        # dataset.targets = dataset.targets[mask]
+        digits = [0,1]
+        mask = torch.zeros_like(dataset.targets).bool()
+        for digit in digits:
+            mask = mask | (dataset.targets == digit)
+
+        dataset.data = dataset.data[mask]
+        dataset.targets = dataset.targets[mask]
 
     elif dataset_name == "cmnist":
         transform.transforms.pop(2)  # Remove hflip
