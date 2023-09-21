@@ -4,10 +4,38 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import nn
+from icecream import ic
 
 from simple_einet.layers import AbstractLayer
 from simple_einet.type_checks import check_valid
 from simple_einet.utils import SamplingContext, index_one_hot, diff_sample_one_hot
+
+
+def logsumexp(tensors, mask=None, dim=-1):
+    """
+    Source: https://github.com/pytorch/pytorch/issues/32097
+
+    Logsumexp with custom scalar mask to allow for negative values in the sum.
+
+    Args:
+      tensors:
+      mask:  (Default value = None)
+
+    Returns:
+
+    """
+    # Ensure that everything is a tensor
+    if type(tensors) == list or type(tensors) == tuple:
+        tensors = torch.stack(tensors, dim=dim)
+    if mask is None:
+        mask = torch.ones(tensors.shape[dim], device=tensors.device)
+    else:
+        if type(mask) == list or type(mask) == tuple:
+            mask = torch.tensor(mask, device=tensors.device)
+        assert mask.shape == (tensors.shape[dim],), "Invalid mask shape"
+
+    maxes = torch.max(tensors, dim=dim)[0]
+    return ((tensors - maxes.unsqueeze(dim)).exp() * mask).sum(dim=dim).log() + maxes
 
 
 class LinsumLayer(AbstractLayer):
@@ -34,6 +62,7 @@ class LinsumLayer(AbstractLayer):
 
         # Dropout
         self.dropout = check_valid(dropout, expected_type=float, lower_bound=0.0, upper_bound=1.0)
+        self.dropout = nn.Parameter(torch.tensor(self.dropout), requires_grad=False)
         self._bernoulli_dist = torch.distributions.Bernoulli(probs=self.dropout)
 
         # Necessary for sampling with evidence: Save input during forward pass.
@@ -55,6 +84,91 @@ class LinsumLayer(AbstractLayer):
 
     def _get_normalized_log_weights(self):
         return F.log_softmax(self.weights, dim=1)
+
+    def forward_tdi(self, log_exp_ch: torch.Tensor, log_var_ch: torch.Tensor, dropout_inference=None):
+        """
+        Einsum layer dropout inference pass.
+
+        Args:
+            log_exp_ch: Input expectations.
+            log_var_ch: Input variances.
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: Output expectations and variances
+        """
+
+        # Dimensions
+        N, D, C, R = log_exp_ch.size()
+        D_out = D // 2
+
+        #################
+        # PRODUCT LAYER #
+        #################
+
+        # ---------------------------------------------------
+        # | 1. Product expectation (default log-likelihood) |
+        # ---------------------------------------------------
+
+        # Get left and right partition probs
+        log_exp_left = log_exp_ch[:, 0::2]
+        log_exp_right = log_exp_ch[:, 1::2]
+        log_exp_prod = (log_exp_left + log_exp_right).unsqueeze(3)  # N x D/2 x Sin x 1 x R
+
+        # -----------------------
+        # | 2. Product variance |
+        # -----------------------
+
+        # Get left and right partition vars
+        log_var_left = log_var_ch[:, 0::2]
+        log_var_right = log_var_ch[:, 1::2]
+
+        log_exp_sq_left = log_exp_left * 2
+        log_exp_sq_right = log_exp_right * 2
+
+        log_var_right_term = log_exp_sq_left + log_exp_sq_right
+
+        log_var_left_term_left = logsumexp((log_var_left, log_exp_sq_left))
+        log_var_left_term_right = logsumexp((log_var_right, log_exp_sq_right))
+
+        log_var_left_term = log_var_left_term_left + log_var_left_term_right
+
+        log_var_prod = logsumexp((log_var_left_term, log_var_right_term), mask=[1, -1])
+
+        #############
+        # SUM LAYER #
+        #############
+
+
+        # Prepare constants
+        # If dropout at inference time is set, use this instead
+        if dropout_inference is not None:
+            log_q = np.log(1 - dropout_inference)
+            log_p = np.log(dropout_inference)
+        else:
+            log_q = torch.log(1 - self.dropout)
+            log_p = torch.log(self.dropout)
+
+        # Get log weights
+        log_weights = self._get_normalized_log_weights().unsqueeze(0)
+
+        # ----------------------
+        # | 3. Sum expectation |
+        # ----------------------
+
+        log_exp_sum = log_q + torch.logsumexp(log_exp_prod + log_weights, dim=2)  # N x D/2 x Sout x R
+
+        # -------------------
+        # | 4. Sum variance |
+        # -------------------
+
+        log_weights_sq = log_weights * 2
+        log_exp_prod_sq = log_exp_prod * 2
+        log_var_prod = log_var_prod.unsqueeze(3)
+
+        log_var_plus_exp = torch.logsumexp(torch.stack((log_var_prod, log_exp_prod_sq + log_p), dim=-1), dim=-1)
+        log_var_sum = log_q + torch.logsumexp(log_weights_sq + log_var_plus_exp, dim=2)
+
+        return log_exp_sum, log_var_sum
 
     def forward(self, x: torch.Tensor):
         """
@@ -79,15 +193,18 @@ class LinsumLayer(AbstractLayer):
 
         # Apply dropout: Set random sum node children to 0 (-inf in log domain)
         if self.dropout > 0.0 and self.training:
-            dropout_indices = self._bernoulli_dist.sample(prod_output.shape).bool()
-            # TODO: this isn't allow, right? maybe add zeros with ninf at mask
-            prod_output[dropout_indices] = np.NINF
+            dropout_indices = self._bernoulli_dist.sample(prod_output.shape)
+            invalid_index = dropout_indices.sum(2) == dropout_indices.shape[2]
+            while invalid_index.any():
+                # Resample only invalid indices
+                dropout_indices[invalid_index] = self._bernoulli_dist.sample(dropout_indices[invalid_index].shape)
+                invalid_index = dropout_indices.sum(2) == dropout_indices.shape[2]
+            dropout_indices = torch.log(1 - dropout_indices)
+            prod_output = prod_output + dropout_indices
+
 
         # Get log weights
         log_weights = self._get_normalized_log_weights().unsqueeze(0)
-        # log_weights = F.log_softmax(self.weights, dim=1).unsqueeze(
-        #     0
-        # )  # 1 x D/2 x Sin x Sout x R
         prob = torch.logsumexp(prod_output + log_weights, dim=2)  # N x D/2 x Sout x R
 
         # Save input if input cache is enabled
@@ -635,3 +752,202 @@ class EinsumMixingLayer(AbstractLayer):
         return "num_features={}, num_sums_in={}, num_sums_out={}".format(
             self.num_features, self.num_sums_in, self.num_sums_out, self.num_repetitions
         )
+
+
+class MixingLayer(AbstractLayer):
+    def __init__(
+        self,
+        num_features: int,
+        num_sums_in: int,
+        num_sums_out: int,
+        dropout: float = 0.0,
+    ):
+        super().__init__(num_features, num_repetitions=1)
+
+        self.num_sums_in = check_valid(num_sums_in, int, 1)
+        self.num_sums_out = check_valid(num_sums_out, int, 1)
+        self.out_features = num_features
+
+        # Dropout
+        self.dropout = check_valid(dropout, expected_type=float, lower_bound=0.0, upper_bound=1.0)
+        self.dropout = nn.Parameter(torch.tensor(self.dropout), requires_grad=False)
+        self._bernoulli_dist = torch.distributions.Bernoulli(probs=self.dropout)
+
+        # Weights, such that each sumnode has its own weights
+        ws = torch.randn(
+            self.num_features,
+            self.num_sums_out,
+            self.num_sums_in,
+        )
+        self.weights = nn.Parameter(ws)
+
+        # Necessary for sampling with evidence: Save input during forward pass.
+        self._is_input_cache_enabled = False
+        self._input_cache_left = None
+        self._input_cache_right = None
+
+    def _get_normalized_log_weights(self):
+        return F.log_softmax(self.weights, dim=2)
+
+    def forward(self, x):
+        # Save input if input cache is enabled
+        if self._is_input_cache_enabled:
+            self._input_cache = x.clone()
+
+        # Dimensions
+        N, D, IC, R = x.size()
+
+
+        # Apply dropout: Set random sum node children to 0 (-inf in log domain)
+        if self.dropout > 0.0 and self.training:
+            dropout_indices = self._bernoulli_dist.sample(x.shape)
+            invalid_index = dropout_indices.sum(3) == dropout_indices.shape[3]
+            while invalid_index.any():
+                # Resample only invalid indices
+                dropout_indices[invalid_index] = self._bernoulli_dist.sample(dropout_indices[invalid_index].shape)
+                invalid_index = dropout_indices.sum(3) == dropout_indices.shape[3]
+            dropout_indices = torch.log(1 - dropout_indices)
+            x = x + dropout_indices
+
+
+        # Get log weights
+        log_weights = self._get_normalized_log_weights().unsqueeze(0)
+        lls = torch.logsumexp(x + log_weights, dim=3)
+
+        return lls
+
+    def forward_tdi(self, log_exp_ch, log_var_ch, dropout_inference=None):
+        # Save input if input cache is enabled
+        if self._is_input_cache_enabled:
+            self._input_cache = log_exp_ch.clone()
+
+        # Dimensions
+        N, D, IC, R = log_exp_ch.size()
+
+        # Get log weights
+        log_weights = self._get_normalized_log_weights().unsqueeze(0)
+
+        # Prepare constants
+        # If dropout at inference time is set, use this instead
+        if dropout_inference is not None:
+            log_q = np.log(1 - dropout_inference)
+            log_p = np.log(dropout_inference)
+        else:
+            log_q = torch.log(1 - self.dropout)
+            log_p = torch.log(self.dropout)
+
+        # Expectation
+        log_exp = log_q + torch.logsumexp(log_exp_ch + log_weights, dim=3)
+
+        # Variance
+        log_weights_sq = log_weights * 2
+        log_exp_ch_sq = log_exp_ch * 2
+        log_var_ch = log_var_ch
+
+        log_var_plus_exp = torch.logsumexp(torch.stack((log_var_ch, log_exp_ch_sq + log_p), dim=-1), dim=-1)
+        log_var = log_q + torch.logsumexp(log_weights_sq + log_var_plus_exp, dim=3)
+
+        return log_exp, log_var
+
+    def sample(
+        self,
+        num_samples: int = None,
+        context: SamplingContext = None,
+        differentiable=False,
+    ) -> Union[SamplingContext, torch.Tensor]:
+        raise NotImplementedError("Not yet implemented for MixingLayer")
+        # Sum weights are of shape: [W, H, IC, OC, R]
+        # We now want to use `indices` to access one in_channel for each in_feature x num_sums_out block
+        # index is of size in_feature
+        weights = self.weights
+
+        in_features, num_sums_out, num_sums_in = weights.shape
+        num_samples = context.num_samples
+
+        self._check_indices_repetition(context)
+
+        if not context.is_differentiable:
+            # Index with parent indices
+            weights = weights.unsqueeze(0)  # make space for batch dim
+            weights = weights.expand(num_samples, -1, -1, -1)
+            p_idxs = context.indices_out.unsqueeze(-1).unsqueeze(-1)  # make space for repetition dim
+            p_idxs = p_idxs.expand(-1, -1, -1, num_sums_in)
+            weights = weights.gather(dim=2, index=p_idxs)
+            # Drop dim which was selected via parent indices
+            weights = weights.squeeze(2)
+        else:
+            # Index with parent indices
+            weights = weights.unsqueeze(0)  # make space for batch dim
+            p_idxs = context.indices_out.unsqueeze(-1)  # make space for repetition dim
+            weights = index_one_hot(weights, index=p_idxs, dim=2)  # TODO: is 2 correct?
+
+        # Check dimensions
+        assert weights.shape == (num_samples, in_features, num_sums_in)
+
+        log_weights = F.log_softmax(weights, dim=2)
+
+        # If evidence is given, adjust the weights with the likelihoods of the observed paths
+        if self._is_input_cache_enabled and self._input_cache is not None:
+            # TODO: parallelize this with torch.gather
+            for i in range(num_samples):
+                # Reweight the i-th samples weights by its likelihood values at the correct
+                # repetition
+                log_weights[i, :, :] += self._input_cache[i, :, :, context.indices_repetition[i]]
+
+        if not context.is_differentiable:
+            if context.is_mpe:
+                indices = log_weights.argmax(dim=2)
+            else:
+                # Create categorical distribution to sample from
+                dist = torch.distributions.Categorical(logits=log_weights)
+
+                indices = dist.sample()
+        else:
+            if context.is_mpe:
+                raise NotImplementedError
+            else:
+                indices = diff_sample_one_hot(
+                    log_weights,
+                    mode="sample",
+                    dim=2,
+                    hard=context.hard,
+                    tau=context.tau,
+                )
+
+        context.indices_out = indices
+        return context
+
+    def _check_indices_repetition(self, context: SamplingContext):
+        assert context.indices_repetition.shape[0] == context.indices_out.shape[0]
+        if self.num_repetitions > 1 and context.indices_repetition is None:
+            raise Exception(
+                f"Sum layer has multiple repetitions (num_repetitions=={self.num_repetitions}) but indices_repetition argument was None, expected a Long tensor size #samples."
+            )
+        if self.num_repetitions == 1 and context.indices_repetition is None:
+            context.indices_repetition = torch.zeros(context.num_samples, dtype=torch.int, device=self.__device)
+
+    def extra_repr(self):
+        return "num_features={}, num_sums_in={}, num_sums_out={}".format(
+            self.num_features, self.num_sums_in, self.num_sums_out, self.num_repetitions
+        )
+
+
+if __name__ == "__main__":
+    x = torch.rand(1, 3, 4)
+    y = torch.rand(1, 3, 4)
+    z = torch.rand(1, 3, 4)
+
+    print(logsumexp((logsumexp((x, y), mask=[1, 1]), z), mask=[1, -1]))
+    print(logsumexp(torch.stack([x, y, z], dim=-1), mask=[1, 1, -1]))
+
+    # layer = LinsumLayer(num_features=2, num_sums_in=3, num_sums_out=10, num_repetitions=7, dropout=0.1)
+    # mixing = MixingLayer(num_features=1, num_sums_in=7, num_sums_out=10)
+
+    # log_exp = torch.randn(1, 2, 3, 7)
+    # log_var = torch.rand_like(log_exp)
+
+    # # x = layer(log_exp)
+    # # x = mixing(x)
+
+    # log_exp, log_var = layer.forward_tdi(log_exp, log_var)
+    # log_exp, log_var = mixing.forward_tdi(log_exp, log_var)

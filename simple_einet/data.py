@@ -1,4 +1,5 @@
 import itertools
+import logging
 import random
 import os
 import math
@@ -14,11 +15,11 @@ from sklearn import datasets
 from torch.utils.data import DataLoader, Dataset, random_split, ConcatDataset
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data.sampler import Sampler
-from torchvision.datasets import CIFAR10, MNIST, SVHN, CelebA, FashionMNIST, LSUN
-from torchvision.transforms.functional import InterpolationMode
+from torchvision.datasets import CIFAR10, MNIST, SVHN, CelebA, FakeData, FashionMNIST, LSUN, Flowers102, ImageFolder, LFWPeople
 
 from simple_einet.distributions import RatNormal
 from simple_einet.distributions.binomial import Binomial
+from simple_einet.distributions.normal import Normal
 
 
 @dataclass
@@ -71,6 +72,11 @@ def get_data_shape(dataset_name: str) -> Shape:
             "celeba": (3, 64, 64),
             "celeba-small": (3, 64, 64),
             "celeba-tiny": (3, 32, 32),
+            "lsun": (3, 32, 32),
+            "fake": (3, 32, 32),
+            "flowers": (3, 32, 32),
+            "tiny-imagenet": (3, 32, 32),
+            "lfw": (3, 32, 32),
         }[dataset_name]
     )
 
@@ -153,7 +159,7 @@ def generate_data(dataset_name: str, n_samples: int = 1000) -> Tuple[torch.Tenso
     return data, labels
 
 
-def get_datasets(cfg, normalize: bool) -> Tuple[Dataset, Dataset, Dataset]:
+def get_datasets(dataset_name, data_dir, normalize: bool) -> Tuple[Dataset, Dataset, Dataset]:
     """
     Get the specified dataset.
 
@@ -164,9 +170,6 @@ def get_datasets(cfg, normalize: bool) -> Tuple[Dataset, Dataset, Dataset]:
     Returns:
         Dataset: Dataset.
     """
-
-    # Get dataset name
-    dataset_name: str = cfg.dataset
 
     # Get the image size (assumes quadratic images)
     shape = get_data_shape(dataset_name)
@@ -181,7 +184,10 @@ def get_datasets(cfg, normalize: bool) -> Tuple[Dataset, Dataset, Dataset]:
         ]
     )
 
-    kwargs = dict(root=cfg.data_dir, download=True, transform=transform)
+    kwargs = dict(root=data_dir, download=True, transform=transform)
+
+    # Custom split generator with fixed seed
+    split_generator = torch.Generator().manual_seed(1)
 
     # Select the datasets
     if "synth" in dataset_name:
@@ -218,7 +224,8 @@ def get_datasets(cfg, normalize: bool) -> Tuple[Dataset, Dataset, Dataset]:
         N_train = round(N * 0.9)
         N_val = N - N_train
         lenghts = [N_train, N_val]
-        dataset_train, dataset_val = random_split(dataset_train, lengths=lenghts)
+
+        dataset_train, dataset_val = random_split(dataset_train, lengths=lenghts, generator=split_generator)
 
     elif dataset_name == "fmnist" or dataset_name == "fmnist-28":
         if normalize:
@@ -232,7 +239,8 @@ def get_datasets(cfg, normalize: bool) -> Tuple[Dataset, Dataset, Dataset]:
         N_train = round(N * 0.9)
         N_val = N - N_train
         lenghts = [N_train, N_val]
-        dataset_train, dataset_val = random_split(dataset_train, lengths=lenghts)
+
+        dataset_train, dataset_val = random_split(dataset_train, lengths=lenghts, generator=split_generator)
 
     elif "celeba" in dataset_name:
         if normalize:
@@ -251,7 +259,8 @@ def get_datasets(cfg, normalize: bool) -> Tuple[Dataset, Dataset, Dataset]:
         N_train = round(N * 0.9)
         N_val = N - N_train
         lenghts = [N_train, N_val]
-        dataset_train, dataset_val = random_split(dataset_train, lengths=lenghts)
+
+        dataset_train, dataset_val = random_split(dataset_train, lengths=lenghts, generator=split_generator)
         dataset_test = CIFAR10(**kwargs, train=False)
 
     elif "svhn" in dataset_name:
@@ -263,7 +272,8 @@ def get_datasets(cfg, normalize: bool) -> Tuple[Dataset, Dataset, Dataset]:
 
         N = len(dataset_train.data)
         lenghts = [round(N * 0.9), round(N * 0.1)]
-        dataset_train, dataset_val = random_split(dataset_train, lengths=lenghts)
+
+        dataset_train, dataset_val = random_split(dataset_train, lengths=lenghts, generator=split_generator)
         dataset_test = SVHN(**kwargs, split="test")
 
         if dataset_name == "svhn-extra":
@@ -271,24 +281,84 @@ def get_datasets(cfg, normalize: bool) -> Tuple[Dataset, Dataset, Dataset]:
             dataset_extra = SVHN(**kwargs, split="extra")
             dataset_train = ConcatDataset([dataset_train, dataset_extra])
 
+
+    elif dataset_name == "lsun":
+        if normalize:
+            transform.transforms.append(transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]))
+
+        del kwargs["download"]
+
+        kwargs["root"] = os.path.join(kwargs["root"], "lsun")
+
+        # Load train
+        dataset_train = LSUN(**kwargs, classes=["church_outdoor_train"])
+        dataset_test = LSUN(**kwargs, classes=["church_outdoor_val"])
+
+        N = dataset_train.length
+        lenghts = [round(N * 0.9), round(N * 0.1)]
+        dataset_train, dataset_val = random_split(dataset_train, lengths=lenghts, generator=split_generator)
+
+    elif dataset_name == "fake":
+        # Load train
+        dataset_train = FakeData(size=3000, image_size=shape, num_classes=10, transform=transform)
+        dataset_val = FakeData(size=3000, image_size=shape, num_classes=10, transform=transform)
+        dataset_test = FakeData(size=3000, image_size=shape, num_classes=10, transform=transform)
+
+    elif dataset_name == "flowers":
+
+        if normalize:
+            transform.transforms.append(transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]))
+
+        # Load train
+        dataset_train = Flowers102(**kwargs, split="train")
+        dataset_val = Flowers102(**kwargs, split="val")
+        dataset_test = Flowers102(**kwargs, split="test")
+
+    elif dataset_name == "tiny-imagenet":
+
+        if normalize:
+            transform.transforms.append(transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]))
+
+        # Load train
+        dataset_train = ImageFolder(root=os.path.join(data_dir, "tiny-imagenet-200", "train"), transform=transform)
+        dataset_val = ImageFolder(root=os.path.join(data_dir, "tiny-imagenet-200", "val"), transform=transform)
+        dataset_test = ImageFolder(root=os.path.join(data_dir, "tiny-imagenet-200", "test"), transform=transform)
+
+    elif dataset_name == "lfw":
+
+        if normalize:
+            transform.transforms.append(transforms.Normalize([0.5], [0.5]))
+
+        dataset_train = LFWPeople(**kwargs, split="train")
+
+        dataset_test = LFWPeople(**kwargs, split="test")
+
+        N = len(dataset_train.data)
+        N_train = round(N * 0.9)
+        N_val = N - N_train
+        lenghts = [N_train, N_val]
+
+        dataset_train, dataset_val = random_split(dataset_train, lengths=lenghts, generator=split_generator)
+
+
     else:
         raise Exception(f"Unknown dataset: {dataset_name}")
 
     return dataset_train, dataset_val, dataset_test
 
 
-def build_dataloader(cfg, loop: bool, normalize: bool) -> Tuple[DataLoader, DataLoader, DataLoader]:
+def build_dataloader(dataset_name, data_dir, batch_size, num_workers, loop: bool, normalize: bool) -> Tuple[DataLoader, DataLoader, DataLoader]:
     # Get dataset objects
-    dataset_train, dataset_val, dataset_test = get_datasets(cfg, normalize=normalize)
+    dataset_train, dataset_val, dataset_test = get_datasets(dataset_name, data_dir, normalize=normalize)
 
     # Build data loader
-    loader_train = _make_loader(cfg, dataset_train, loop=loop, shuffle=True)
-    loader_val = _make_loader(cfg, dataset_val, loop=loop, shuffle=False)
-    loader_test = _make_loader(cfg, dataset_test, loop=loop, shuffle=False)
+    loader_train = _make_loader(batch_size, num_workers, dataset_train, loop=loop, shuffle=True)
+    loader_val = _make_loader(batch_size, num_workers, dataset_val, loop=loop, shuffle=False)
+    loader_test = _make_loader(batch_size, num_workers, dataset_test, loop=loop, shuffle=False)
     return loader_train, loader_val, loader_test
 
 
-def _make_loader(cfg, dataset: Dataset, loop: bool, shuffle: bool) -> DataLoader:
+def _make_loader(batch_size, num_workers, dataset: Dataset, loop: bool, shuffle: bool) -> DataLoader:
     if loop:
         sampler = TrainingSampler(size=len(dataset))
     else:
@@ -300,8 +370,8 @@ def _make_loader(cfg, dataset: Dataset, loop: bool, shuffle: bool) -> DataLoader
         dataset,
         shuffle=(sampler is None) and shuffle,
         sampler=sampler,
-        batch_size=cfg.batch_size,
-        num_workers=cfg.num_workers,
+        batch_size=batch_size,
+        num_workers=num_workers,
         pin_memory=True,
         drop_last=False,
         worker_init_fn=worker_init_reset_seed,
@@ -357,6 +427,7 @@ class Dist(str, Enum):
     """Enum for the distribution of the data."""
 
     NORMAL = "normal"
+    NORMAL_RAT = "normal_rat"
     BINOMIAL = "binomial"
 
 
@@ -375,6 +446,9 @@ def get_distribution(dist, min_sigma, max_sigma):
 
     """
     if dist == Dist.NORMAL:
+        leaf_type = Normal
+        leaf_kwargs = {}
+    elif dist == Dist.NORMAL_RAT:
         leaf_type = RatNormal
         leaf_kwargs = {"min_sigma": min_sigma, "max_sigma": max_sigma}
     elif dist == Dist.BINOMIAL:

@@ -4,33 +4,48 @@ defaults:
   - override hydra/job_logging: colorlog
   - override hydra/hydra_logging: colorlog
 
+# Hydra config
+hydra:
+  run:
+    dir: "${results_dir}/${dataset}/${now:%Y-%m-%d_%H-%M-%S}_${oc.select:tag,}"
+  sweep:
+    dir: "${hydra.run.dir}/${hydra.job.name}"
+    subdir: "${hydra.run.dir}/${hydra.job.num}"
+  job_logging:
+    handlers:
+      file:
+        filename: ${hydra.runtime.output_dir}/${hydra.job.name}.log  # Fixed in hydra-colorlog version 1.2.1
+
+
 # Default set of configurations.
-data_dir: ???
-results_dir: ???
-lr: 0.1
+data_dir: "${oc.env:DATA_DIR}/"
+results_dir: "${oc.env:RESULTS_DIR}/${project_name}"
+project_name: "simple-einet-dc"
+lr: 0.0005
 batch_size: 64
 n_bits: 8
-num_workers: 8
+num_workers: 16
 temperature_leaves: 1.0
 temperature_sums: 1.0
 dropout: 0.0
 min_sigma: 1e-2
 max_sigma: 2.0
 dry_run: False
-seed: 1
+seed: ???
 log_interval: 10
-classification: False
+classification: True
 device: "cuda"
 debug: False
 S: 10
 I: 10
 D: 3
 R: 1
+K: -1
 gpu: 0
 epochs: 10
 load_and_eval: False
 cp: False
-dist: "binomial"
+dist: "normal"
 precision: 16
 group_tag: ???
 tag: ???
@@ -40,3 +55,5 @@ profiler: ???
 log_weights: False
 dataset: ???
 num_classes: 10
+init_leaf_data: True
+einet_mixture: False
