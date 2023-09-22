@@ -4,7 +4,7 @@ import numpy as np
 import torch
 from simple_einet.distributions.abstract_leaf import AbstractLeaf, dist_mode
 from simple_einet.type_checks import check_valid
-from simple_einet.utils import SamplingContext
+from simple_einet.sampling_utils import SamplingContext
 from torch import distributions as dist
 from torch import nn
 from torch.nn import functional as F

@@ -161,9 +161,11 @@ if __name__ == "__main__":
         num_leaves=args.I,
         num_repetitions=args.R,
         num_classes=num_classes,
-        leaf_type=Binomial,
-        leaf_kwargs={"total_count": n_bins - 1},
+        leaf_type=Normal,
+        leaf_kwargs={},
+        # leaf_kwargs={"total_count": n_bins - 1},
         dropout=0.0,
+        cross_product=True,
     )
     model = Einet(config).to(device)
     print(

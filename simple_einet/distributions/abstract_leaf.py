@@ -4,7 +4,7 @@ from simple_einet.type_checks import check_valid
 import logging
 from abc import ABC, abstractmethod
 from simple_einet.layers import AbstractLayer
-from simple_einet.utils import SamplingContext, index_one_hot
+from simple_einet.sampling_utils import SamplingContext, index_one_hot
 from typing import List
 from torch import distributions as dist, nn
 import torch
@@ -84,9 +84,11 @@ def dist_sample(distribution: dist.Distribution, context: SamplingContext = None
     Sample n samples from a given distribution.
 
     Args:
-        indices_repetition: Indices into the repetition axis.
-        distribution (dists.Distribution): Base distribution to sample from.
-        indices_out (torch.Tensor): Tensor of indexes that point to specific representations of single features/scopes.
+        distribution: Leaf distribution from which to sample from.
+        context: Sampling context.
+
+    Returns:
+        torch.Tensor: Samples from the given distribution.
     """
 
     # Sample from the specified distribution
@@ -136,6 +138,13 @@ class AbstractLeaf(AbstractLayer, ABC):
     representation, e.g. Gaussians.
 
     Implementing layers shall be valid distributions.
+
+    Attributes:
+        num_features: Number of input features.
+        num_channels: Number of input features.
+        num_leaves: Number of parallel representations for each input feature.
+        num_repetitions: Number of parallel repetitions of this layer.
+        cardinality: Number of random variables covered by a single leaf.
     """
 
     def __init__(
@@ -170,7 +179,17 @@ class AbstractLeaf(AbstractLayer, ABC):
         self.marginalization_constant = nn.Parameter(torch.zeros(1), requires_grad=False)
 
     def _apply_dropout(self, x: torch.Tensor) -> torch.Tensor:
-        # Apply dropout sampled from a bernoulli during training (model.train() has been called)
+        """
+        Applies dropout to the input tensor `x` according to the dropout probability
+        `self.dropout`. Dropout is only applied during training (when `model.train()`
+        has been called).
+
+        Args:
+            x (torch.Tensor): The input tensor to apply dropout to.
+
+        Returns:
+            torch.Tensor: The input tensor with dropout applied.
+        """
         if self.dropout > 0.0 and self.training:
             dropout_indices = self._bernoulli_dist.sample(
                 x.shape,
@@ -179,9 +198,18 @@ class AbstractLeaf(AbstractLayer, ABC):
         return x
 
     def _marginalize_input(self, x: torch.Tensor, marginalized_scopes: List[int]) -> torch.Tensor:
+        """
+        Marginalizes the input tensor `x` along the dimensions specified in `marginalized_scopes`.
+
+        Args:
+            x (torch.Tensor): The input tensor to be marginalized.
+            marginalized_scopes (List[int]): A list of dimensions to be marginalized.
+
+        Returns:
+            torch.Tensor: The marginalized tensor.
+        """
         # Marginalize nans set by user
         if marginalized_scopes is not None:
-
             # Transform to tensor
             if type(marginalized_scopes) != torch.Tensor:
                 s = torch.tensor(marginalized_scopes)
@@ -196,6 +224,16 @@ class AbstractLeaf(AbstractLayer, ABC):
         return x
 
     def forward(self, x, marginalized_scopes: List[int]):
+        """
+        Forward pass through the distribution.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+            marginalized_scopes (List[int]): List of scopes to marginalize.
+
+        Returns:
+            torch.Tensor: Output tensor after marginalization.
+        """
         # Forward through base distribution
         d = self._get_base_distribution()
         x = dist_forward(d, x)
@@ -211,8 +249,14 @@ class AbstractLeaf(AbstractLayer, ABC):
 
     def sample(self, num_samples: int = None, context: SamplingContext = None) -> torch.Tensor:
         """
-        Perform sampling, given indices from the parent layer that indicate which of the multiple representations
-        for each input shall be used.
+        Sample from the distribution represented by this leaf node.
+
+        Args:
+            num_samples (int, optional): The number of samples to draw from the distribution. If None, a single sample is drawn.
+            context (SamplingContext, optional): The sampling context to use when drawing samples.
+
+        Returns:
+            torch.Tensor: A tensor of shape (num_samples,) or (1,) containing the drawn samples.
         """
         d = self._get_base_distribution(context)
         samples = dist_sample(distribution=d, context=context)

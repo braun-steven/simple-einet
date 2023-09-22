@@ -22,7 +22,7 @@ from simple_einet.einsum_layer import (
 from simple_einet.factorized_leaf_layer import FactorizedLeaf
 from simple_einet.layers import Sum
 from simple_einet.type_checks import check_valid
-from simple_einet.utils import SamplingContext, provide_evidence
+from simple_einet.sampling_utils import provide_evidence, SamplingContext
 
 logger = logging.getLogger(__name__)
 
@@ -587,7 +587,7 @@ class Einet(nn.Module):
 
         with provide_evidence(self, evidence, marginalized_scopes, requires_grad=True):
             # If class is given, use it as base index
-            # Start sampling one of the C root nodes TODO: check what happens if C=1
+            # Start sampling one of the C root nodes
             ctx = SamplingContext(
                 num_samples=num_samples,
                 is_mpe=is_mpe,
@@ -600,7 +600,6 @@ class Einet(nn.Module):
                 tau=tau,
                 mpe_at_leaves=mpe_at_leaves,
             )
-            # ctx = self._sampling_root.sample(context=ctx)
             ctx.indices_out = torch.ones(
                 num_samples,
                 1,

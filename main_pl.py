@@ -1,6 +1,4 @@
 #!/usr/bin/env python
-from simple_einet.distributions.normal import Normal
-from simple_einet.einet import Einet
 import omegaconf
 import time
 import wandb
@@ -8,7 +6,6 @@ from hydra.core.hydra_config import HydraConfig
 import logging
 from omegaconf import DictConfig, OmegaConf, open_dict
 import os
-import sys
 from rich.traceback import install
 
 install()
@@ -24,62 +21,31 @@ from pytorch_lightning.utilities.model_summary import (
 )
 
 from exp_utils import (
-    setup_experiment,
     load_from_checkpoint,
     plot_distribution,
 )
 from models_pl import SpnDiscriminative, SpnGenerative
 from simple_einet.data import Dist
 from simple_einet.data import build_dataloader
-from tqdm import tqdm
+from simple_einet.sampling_utils import init_einet_stats
 
 # A logger for this file
 logger = logging.getLogger(__name__)
 
 
-def init_einet_stats(einet: Einet, dataloader: torch.utils.data.DataLoader):
-    stats_mean = None
-    stats_std = None
-    for batch in tqdm(dataloader, desc="Leaf Parameter Initialization"):
-        data, label = batch
-        if stats_mean == None:
-            stats_mean = data.mean(dim=0)
-            stats_std = data.std(dim=0)
-        else:
-            stats_mean += data.mean(dim=0)
-            stats_std += data.std(dim=0)
-
-    stats_mean /= len(dataloader)
-    stats_std /= len(dataloader)
-
-    if einet.config.leaf_type == Normal:
-        if type(einet) == Einet:
-            einets = [einet]
-        else:
-            einets = einet.einets
-
-        stats_mean_v = (
-            stats_mean.view(-1, 1, 1)
-            .repeat(1, einets[0].config.num_leaves, einets[0].config.num_repetitions)
-            .view_as(einets[0].leaf.base_leaf.means)
-        )
-        stats_std_v = (
-            stats_std.view(-1, 1, 1)
-            .repeat(1, einets[0].config.num_leaves, einets[0].config.num_repetitions)
-            .view_as(einets[0].leaf.base_leaf.log_stds)
-        )
-        for net in einets:
-            net.leaf.base_leaf.means.data = stats_mean_v
-
-            net.leaf.base_leaf.log_stds.data = torch.log(stats_std_v + 1e-3)
-
-
 def main(cfg: DictConfig):
+    """
+    Main function for training and evaluating an Einet.
+
+    Args:
+        cfg: Config file.
+    """
     preprocess_cfg(cfg)
 
+    # Get hydra config
     hydra_cfg = HydraConfig.get()
     run_dir = hydra_cfg.runtime.output_dir
-    print("Working directory : {}".format(os.getcwd()))
+    logger.info("Working directory : {}".format(os.getcwd()))
 
     # Save config
     with open(os.path.join(run_dir, "config.yaml"), "w") as f:
@@ -97,6 +63,7 @@ def main(cfg: DictConfig):
     if not cfg.wandb:
         os.environ["WANDB_MODE"] = "offline"
 
+    # Ensure that everything is properly seeded
     seed_everything(cfg.seed, workers=True)
 
     # Setup devices
@@ -108,16 +75,16 @@ def main(cfg: DictConfig):
             devices = [int(g) for g in cfg.gpu]
     else:
         accelerator = "cpu"
-        devices = None
+        devices = 1
 
-    print("Training model...")
+    logger.info("Training model...")
     # Create dataloader
     normalize = cfg.dist == Dist.NORMAL
     train_loader, val_loader, test_loader = build_dataloader(
         dataset_name=cfg.dataset,
         data_dir=cfg.data_dir,
         batch_size=cfg.batch_size,
-        num_workers=cfg.num_workers,
+        num_workers=min(cfg.num_workers, os.cpu_count()),
         loop=False,
         normalize=normalize,
     )
@@ -130,7 +97,7 @@ def main(cfg: DictConfig):
         group=cfg.group_tag,
         offline=not cfg.wandb,
         config=cfg_container,
-        reinit=False,
+        reinit=True,
         save_dir=run_dir,
         settings=wandb.Settings(start_method="thread"),
     )
@@ -148,7 +115,14 @@ def main(cfg: DictConfig):
         else:
             model = SpnGenerative(cfg, steps_per_epoch=len(train_loader))
 
+        if cfg.torch_compile:  # Doesn't seem to work with einsum yet
+            # Rase an error since einsum doesn't seem to work with compilation yet
+            # model = torch.compile(model)
+            raise NotImplementedError("Torch compilation not yet supported with einsum.")
+
         if cfg.einet_mixture:
+            # If we chose a mixture of einets, we need to initialize the mixture weights
+            logger.info("Initializing Einet mixture weights")
             model.spn.initialize(dataloader=train_loader, device=devices[0])
 
         if cfg.init_leaf_data:
@@ -157,17 +131,10 @@ def main(cfg: DictConfig):
 
     # Store number of model parameters
     summary = ModelSummary(model, max_depth=-1)
-    print("Model:")
-    print(model)
-    print("Summary:")
-    print(summary)
-    # logger_wandb.experiment.config["trainable_parameters"] = summary.trainable_parameters
-    # logger_wandb.experiment.config["trainable_parameters_leaf"] = summary.param_nums[
-    #     summary.layer_names.index("spn.leaf")
-    # ]
-    # logger_wandb.experiment.config["trainable_parameters_sums"] = summary.param_nums[
-    #     summary.layer_names.index("spn.einsum_layers")
-    # ]
+    logger.info("Model:")
+    logger.info(model)
+    logger.info("Summary:")
+    logger.info(summary)
 
     # Setup callbacks
     callbacks = []
@@ -185,7 +152,6 @@ def main(cfg: DictConfig):
     # Create trainer
     trainer = pl.Trainer(
         max_epochs=cfg.epochs,
-        # max_steps=cfg.max_steps,
         logger=logger_wandb,
         accelerator=accelerator,
         devices=devices,
@@ -195,22 +161,21 @@ def main(cfg: DictConfig):
         profiler=cfg.profiler,
         default_root_dir=run_dir,
         enable_checkpointing=False,
-        detect_anomaly=True
+        detect_anomaly=True,
     )
 
     if not cfg.load_and_eval:
         # Fit model
         trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=val_loader)
 
-    print("Evaluating model...")
+    logger.info("Evaluating model...")
 
     if "synth" in cfg.dataset and not cfg.classification:
         plot_distribution(model=model.spn, dataset_name=cfg.dataset, logger_wandb=logger_wandb)
 
     # Evaluate spn reconstruction error
     trainer.test(model=model, dataloaders=[train_loader, val_loader, test_loader], verbose=True)
-
-    print("Finished evaluation...")
+    logger.info("Finished evaluation...")
 
     # Save checkpoint in general models directory to be used across experiments
     chpt_path = os.path.join(run_dir, "model.pt")
@@ -252,10 +217,7 @@ def preprocess_cfg(cfg: DictConfig):
     if "seed" not in cfg:
         cfg.seed = int(time.time())
 
-    if cfg.K > 0:
-        cfg.I = cfg.K
-        cfg.S = cfg.K
-
+    # Convert dist string to enum
     cfg.dist = Dist[cfg.dist.upper()]
 
 

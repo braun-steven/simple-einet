@@ -8,7 +8,8 @@ from torch import distributions as dist
 from torch import nn
 from torch.nn import functional as F
 
-from simple_einet.utils import SamplingContext, invert_permutation
+from simple_einet.utils import invert_permutation
+from simple_einet.sampling_utils import SamplingContext
 from simple_einet.layers import AbstractLayer, Sum
 from simple_einet.type_checks import check_valid
 from simple_einet.distributions.abstract_leaf import AbstractLeaf, dist_mode
@@ -18,7 +19,7 @@ class Mixture(AbstractLeaf):
     def __init__(
         self,
         distributions,
-        in_features: int,
+        num_features: int,
         out_channels,
         num_repetitions,
         dropout=0.0,
@@ -30,15 +31,17 @@ class Mixture(AbstractLeaf):
             distributions: List of possible distributions to represent the feature with.
             out_channels: out_channels of how many nodes each distribution is assigned to.
             in_features: Number of input features.
+            num_repetitions: Number of times to repeat the layer.
+            dropout: Dropout probability.
         """
-        super().__init__(in_features, out_channels, num_repetitions, dropout)
+        super().__init__(num_features, out_channels, num_repetitions, dropout)
         # Build different layers for each distribution specified
-        reprs = [distr(in_features, out_channels, num_repetitions, dropout) for distr in distributions]
+        reprs = [distr(num_features, out_channels, num_repetitions, dropout) for distr in distributions]
         self.representations = nn.ModuleList(reprs)
 
         # Build sum layer as mixture of distributions
         self.sumlayer = Sum(
-            num_features=in_features,
+            num_features=num_features,
             num_sums_in=len(distributions) * out_channels,
             num_sums_out=out_channels,
             num_repetitions=num_repetitions,
@@ -48,6 +51,16 @@ class Mixture(AbstractLeaf):
         raise Exception("Not implemented")
 
     def forward(self, x, marginalized_scopes: List[int]):
+        """
+        Forward pass of the Mixture layer.
+
+        Args:
+            x: Input tensor.
+            marginalized_scopes: List of marginalized scopes.
+
+        Returns:
+            Output tensor.
+        """
         results = [d(x) for d in self.representations]
 
         # Stack along output channel dimension
@@ -58,6 +71,16 @@ class Mixture(AbstractLeaf):
         return x
 
     def sample(self, num_samples: int = None, context: SamplingContext = None) -> torch.Tensor:
+        """
+        Sample from the Mixture layer.
+
+        Args:
+            num_samples: Number of samples to generate.
+            context: Sampling context.
+
+        Returns:
+            Sampled tensor.
+        """
         # Sample from sum mixture layer
         context = self.sumlayer.sample(context=context)
 

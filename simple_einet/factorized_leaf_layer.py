@@ -2,7 +2,7 @@ from typing import List
 import torch
 import numpy as np
 
-from simple_einet.utils import SamplingContext, index_one_hot
+from simple_einet.sampling_utils import SamplingContext, index_one_hot
 from simple_einet.layers import AbstractLayer
 from simple_einet.distributions import AbstractLeaf
 
@@ -12,11 +12,11 @@ class FactorizedLeaf(AbstractLayer):
     A 'meta'-leaf layer that combines multiple scopes of a base-leaf layer via naive factorization.
 
     Attributes:
-        base_leaf: Base leaf layer that contains the actual leaf distribution.
-        in_features: Number of input features/RVs.
-        out_features: Number of output features/RVs. This determines the factorization group size (round(in_features / out_features))
-        scopes: One-hot mapping from which in_features correspond to which out_features.
-
+        num_features (int): Number of input features.
+        num_features_out (int): Number of output features.
+        num_repetitions (int): Number of repetitions.
+        base_leaf (AbstractLeaf): The base leaf layer.
+        scopes (torch.Tensor): The scopes of the factorized groups of RVs.
     """
 
     def __init__(
@@ -28,10 +28,10 @@ class FactorizedLeaf(AbstractLayer):
     ):
         """
         Args:
-            in_features (int): Number of input features/RVs.
-            out_features (int): Number of output features/RVs.
+            num_features (int): Number of input features.
+            num_features_out (int): Number of output features.
             num_repetitions (int): Number of repetitions.
-            base_leaf (Leaf): Base leaf distribution object.
+            base_leaf (AbstractLeaf): The base leaf layer.
         """
 
         super().__init__(num_features, num_repetitions=num_repetitions)
@@ -56,24 +56,48 @@ class FactorizedLeaf(AbstractLayer):
         self.register_buffer("scopes", scopes)
 
     def forward(self, x: torch.Tensor, marginalized_scopes: List[int]):
-        # Forward through base leaf
-        x = self.base_leaf(x, marginalized_scopes)
+            """
+            Forward pass through the factorized leaf layer.
 
-        # Factorize input channels
-        x = x.sum(dim=1)
+            Args:
+                x (torch.Tensor): Input tensor of shape (batch_size, num_input_channels, num_leaves, num_repetitions).
+                marginalized_scopes (List[int]): List of integers representing the marginalized scopes.
 
-        # Merge scopes by naive factorization
-        x = torch.einsum("bicr,ior->bocr", x, self.scopes)
+            Returns:
+                torch.Tensor: Output tensor of shape (batch_size, num_output_channels, num_leaves, num_repetitions).
+            """
+            # Forward through base leaf
+            x = self.base_leaf(x, marginalized_scopes)
 
-        assert x.shape == (
-            x.shape[0],
-            self.num_features_out,
-            self.base_leaf.num_leaves,
-            self.num_repetitions,
-        )
-        return x
+            # Factorize input channels
+            x = x.sum(dim=1)
+
+            # Merge scopes by naive factorization
+            x = torch.einsum("bicr,ior->bocr", x, self.scopes)
+
+            assert x.shape == (
+                x.shape[0],
+                self.num_features_out,
+                self.base_leaf.num_leaves,
+                self.num_repetitions,
+            )
+            return x
 
     def sample(self, num_samples: int = None, context: SamplingContext = None) -> torch.Tensor:
+        """
+        Samples the factorized leaf layer by generating `num_samples` samples from the base leaf layer,
+        and then mapping them to the factorized leaf layer using the indices specified in the `context`
+        argument. If `context.is_differentiable` is True, the mapping is done using one-hot indexing.
+
+        Args:
+            num_samples (int, optional): The number of samples to generate. If None, defaults to the
+                `num_samples` attribute of the `context` argument. Defaults to None.
+            context (SamplingContext, optional): The sampling context to use. Defaults to None.
+
+        Returns:
+            torch.Tensor: A tensor of shape `(num_samples, self.num_features_out, self.num_leaves)`,
+            representing the samples generated from the factorized leaf layer.
+        """
         # Save original indices_out and set context indices_out to none, such that the out_channel
         # are not filtered in the base_leaf sampling procedure
         indices_out = context.indices_out
@@ -110,18 +134,6 @@ class FactorizedLeaf(AbstractLayer):
             samples = samples.gather(dim=-1, index=indices_in_gather)
             samples.squeeze_(-1)  # Remove num_leaves dimension
         else:
-            # i_rep = context.indices_repetition.argmax(-1).long()
-            # i_out = indices_out.argmax(-1).long()
-            # scopes_orig = self.scopes[..., i_rep].permute(2, 0, 1)
-            # rnge_in = torch.arange(self.num_features_out, device=samples.device)
-            # scopes_orig = (scopes_orig * rnge_in).sum(-1).long()
-            # indices_in_gather_orig = i_out.gather(dim=1, index=scopes_orig)
-            # indices_in_gather_orig = indices_in_gather_orig.view(num_samples, 1, -1, 1)
-            #
-            # indices_in_gather_orig = indices_in_gather_orig.expand(-1, samples.shape[1], -1, -1)
-            # samples_orig = samples.gather(dim=-1, index=indices_in_gather_orig)
-            # samples_orig.squeeze_(-1)  # Remove num_leaves dimension
-
             scopes = self.scopes.unsqueeze(0)  # make space for batch dim
             r_idx = context.indices_repetition.view(context.num_samples, 1, 1, -1)
             scopes = index_one_hot(scopes, index=r_idx, dim=-1)
@@ -130,8 +142,6 @@ class FactorizedLeaf(AbstractLayer):
 
             indices_in = indices_in.unsqueeze(1)  # make space for channel dim
             samples = index_one_hot(samples, index=indices_in, dim=-1)
-
-            # assert (samples - samples_orig).sum() < 1e-4
 
         return samples
 

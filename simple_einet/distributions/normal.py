@@ -6,7 +6,7 @@ from simple_einet.type_checks import check_valid
 from torch import distributions as dist
 from torch import nn
 
-from simple_einet.utils import SamplingContext
+from simple_einet.sampling_utils import SamplingContext
 
 
 class Normal(AbstractLeaf):
@@ -19,13 +19,14 @@ class Normal(AbstractLeaf):
         num_leaves: int,
         num_repetitions: int,
     ):
-        """Creat a gaussian layer.
+        """
+        Initializes a Normal distribution with the given parameters.
 
         Args:
-            out_channels: Number of parallel representations for each input feature.
-            in_features: Number of input features.
-            num_repetitions: Number of parallel repetitions of this layer.
-
+            num_features (int): The number of features in the input tensor.
+            num_channels (int): The number of channels in the input tensor.
+            num_leaves (int): The number of leaves in the tree structure.
+            num_repetitions (int): The number of repetitions of the tree structure.
         """
         super().__init__(num_features, num_channels, num_leaves, num_repetitions)
 
@@ -40,7 +41,11 @@ class Normal(AbstractLeaf):
 class RatNormal(AbstractLeaf):
     """Implementation as in RAT-SPN
 
-    Gaussian layer. Maps each input feature to its gaussian log likelihood."""
+    Gaussian layer. Maps each input feature to its gaussian log likelihood.
+
+    Sigmas are constrained to be in min_sigma and max_sigma.
+    Means are constrained to be in min_mean and max_mean.
+    """
 
     def __init__(
         self,
@@ -53,35 +58,19 @@ class RatNormal(AbstractLeaf):
         min_mean: float = None,
         max_mean: float = None,
     ):
-        """Creat a gaussian layer.
+        """
+        Initializes a Normal distribution with learnable parameters for the means and standard deviations.
 
         Args:
-            out_channels: Number of parallel representations for each input feature.
-            in_features: Number of input features.
-
+            num_features (int): The number of features in the input tensor.
+            num_leaves (int): The number of leaves in the tree structure.
+            num_channels (int): The number of channels in the input tensor.
+            num_repetitions (int, optional): The number of repetitions for each feature. Defaults to 1.
+            min_sigma (float, optional): The minimum value for the standard deviation. Defaults to 0.1.
+            max_sigma (float, optional): The maximum value for the standard deviation. Defaults to 1.0.
+            min_mean (float, optional): The minimum value for the mean. Defaults to None.
+            max_mean (float, optional): The maximum value for the mean. Defaults to None.
         """
-        super().__init__(
-            num_features=num_features,
-            num_leaves=num_leaves,
-            num_repetitions=num_repetitions,
-            num_channels=num_channels,
-        )
-
-        # Create gaussian means and stds
-        self.means = nn.Parameter(torch.randn(1, num_channels, num_features, num_leaves, num_repetitions))
-
-        if min_sigma is not None and max_sigma is not None:
-            # Init from normal
-            self.stds = nn.Parameter(torch.randn(1, num_channels, num_features, num_leaves, num_repetitions))
-        else:
-            # Init uniform between 0 and 1
-            self.stds = nn.Parameter(torch.rand(1, num_channels, num_features, num_leaves, num_repetitions))
-
-        self.min_sigma = check_valid(min_sigma, float, 0.0, max_sigma)
-        self.max_sigma = check_valid(max_sigma, float, min_sigma)
-        self.min_mean = check_valid(min_mean, float, upper_bound=max_mean, allow_none=True)
-        self.max_mean = check_valid(max_mean, float, min_mean, allow_none=True)
-
     def _get_base_distribution(self, context: SamplingContext = None) -> "CustomNormal":
         if self.min_sigma < self.max_sigma:
             sigma_ratio = torch.sigmoid(self.stds)
@@ -101,17 +90,44 @@ class RatNormal(AbstractLeaf):
 
 
 class CustomNormal:
-    """Basic Normal class that can sample given mu and sigma."""
+    """
+    A custom implementation of the Normal distribution.
 
+    This class allows to sample from a Normal distribution with mean `mu` and standard deviation `sigma`.
+    The `sample` method returns a tensor of samples from the distribution, with shape `sample_shape + mu.shape`.
+    The `log_prob` method returns the log probability density/mass function evaluated at `x`.
+
+    Args:
+        mu (torch.Tensor): The mean of the Normal distribution.
+        sigma (torch.Tensor): The standard deviation of the Normal distribution.
+    """
     def __init__(self, mu: torch.Tensor, sigma: torch.Tensor):
         self.mu = mu
         self.sigma = sigma
 
     def sample(self, sample_shape: Tuple[int]):
-        num_samples = sample_shape[0]
-        eps = torch.randn((num_samples,) + self.mu.shape, dtype=self.mu.dtype, device=self.mu.device)
-        samples = self.mu.unsqueeze(0) + self.sigma.unsqueeze(0) * eps
-        return samples
+            """
+            Generates random samples from the normal distribution with mean `mu` and standard deviation `sigma`.
+
+            Args:
+                sample_shape (Tuple[int]): The shape of the desired output tensor.
+
+            Returns:
+                samples (torch.Tensor): A tensor of shape `sample_shape` containing random samples from the normal distribution.
+            """
+            num_samples = sample_shape[0]
+            eps = torch.randn((num_samples,) + self.mu.shape, dtype=self.mu.dtype, device=self.mu.device)
+            samples = self.mu.unsqueeze(0) + self.sigma.unsqueeze(0) * eps
+            return samples
 
     def log_prob(self, x):
+        """
+        Computes the log probability density of the normal distribution at the given value.
+
+        Args:
+            x (torch.Tensor): The value(s) at which to evaluate the log probability density.
+
+        Returns:
+            torch.Tensor: The log probability density of the normal distribution at the given value(s).
+        """
         return dist.Normal(self.mu, self.sigma).log_prob(x)

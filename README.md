@@ -1,6 +1,6 @@
 # Simple EinsumNetworks Implementation
 
-This repository contains code for my personal, simplistic, EinsumNetworks implementation.
+This repository contains code for my personal, simplistic, EinsumNetworks implementation. Well, as it happens with code all the time, the implementation is not as simplistic as it used to be but at least this was the initial intention.
 
 For a speed benchmark comparison against the official EinsumNetworks implementation, check out [benchmark.md](./benchmark/benchmark.md) (short: simple-einet is faster in all dimensions except the input-channel size but scales similar to EinsumNetworks).
 
@@ -17,7 +17,7 @@ python main_pl.py dataset=mnist batch_size=128 epochs=100 dist=normal D=5 I=32 S
 <img src="./res/mnist_classification.png" width=400px><img src="./res/mnist_train_val_test_acc.png" width=400px>
 
 
-Generative learning on MNIST:
+Generative training on MNIST:
 
 ``` sh
 python main_pl.py dataset=mnist D=3 I=10 R=1 S=10 lr=0.1 dist=binomial epochs=10 batch_size=128
@@ -55,7 +55,7 @@ out_features = 3
 x = torch.randn(batchsize, in_features)
 
 # Construct Einet
-einet = Einet(EinetConfig(num_features=in_features, depth=2, num_sums=2, num_channels=1, num_leaves=3, num_repetitions=3, num_classes=out_features, dropout=0.0, leaf_type=RatNormal, leaf_kwargs={"min_sigma": 1e-5, "max_sigma": 1.0},))
+einet = Einet(EinetConfig(num_features=in_features, depth=2, num_sums=2, num_channels=1, num_leaves=3, num_repetitions=3, num_classes=out_features, dropout=0.0, leaf_type=Normal))
 
 # Compute log-likelihoods
 lls = einet(x)
@@ -86,7 +86,18 @@ print(f"samples: \n{samples}")
 
 ## Citing EinsumNetworks
 
-If you use EinsumNetworks in your publications, please cite the official EinsumNetworks paper.
+If you use this software, please cite it as below.
+
+```bibtex
+@software{braun2021simple-einet,
+author = {Braun, Steven},
+title = {{Simple-einet: An EinsumNetworks Implementation}},
+url = {https://github.com/braun-steven/simple-einet},
+version = {0.0.1},
+}
+```
+
+If you use EinsumNetworks as a model in your publications, please cite our official EinsumNetworks paper.
 
 ```bibtex
 @inproceedings{pmlr-v119-peharz20a,
@@ -103,16 +114,5 @@ If you use EinsumNetworks in your publications, please cite the official EinsumN
   pdf = {http://proceedings.mlr.press/v119/peharz20a/peharz20a.pdf},
   url = {http://proceedings.mlr.press/v119/peharz20a.html},
   code = {https://github.com/cambridge-mlg/EinsumNetworks},
-}
-```
-
-If you use this software, please cite it as below.
-
-``` bibtex
-@software{braun2021simple-einet,
-author = {Braun, Steven},
-title = {{Simple-einet: An EinsumNetworks Implementation}},
-url = {https://github.com/braun-steven/simple-einet},
-version = {0.0.1},
 }
 ```

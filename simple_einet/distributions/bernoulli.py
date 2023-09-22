@@ -5,16 +5,20 @@ from torch import nn
 
 
 class Bernoulli(AbstractLeaf):
-    """Bernoulli layer. Maps each input feature to its gaussian log likelihood."""
+    """Bernoulli layer. Maps each input feature to its bernoulli log likelihood.
+    
+    Probabilities are modeled as unconstrained parameters and are transformed via a sigmoid function into [0, 1] when needed.
+    """
 
     def __init__(self, num_features: int, num_channels: int, num_leaves: int, num_repetitions: int):
-        """Creat a gaussian layer.
+        """
+        Initializes a Bernoulli distribution with the given parameters.
 
         Args:
-            out_channels: Number of parallel representations for each input feature.
-            in_features: Number of input features.
-            num_repetitions: Number of parallel repetitions of this layer.
-
+            num_features (int): The number of features in the input data.
+            num_channels (int): The number of channels in the input data.
+            num_leaves (int): The number of leaves in the tree structure.
+            num_repetitions (int): The number of repetitions for each leaf.
         """
         super().__init__(num_features, num_channels, num_leaves, num_repetitions)
 

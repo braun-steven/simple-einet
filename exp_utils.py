@@ -32,6 +32,11 @@ from torch.nn.parallel.distributed import DistributedDataParallel
 from torch.utils.tensorboard import SummaryWriter
 from torchvision.transforms import ToTensor
 
+
+
+from matplotlib.cm import tab10
+from matplotlib import cm
+
 from simple_einet.data import build_dataloader, get_data_shape, Shape, generate_data
 
 
@@ -399,43 +404,17 @@ def catch_kb_interrupt(output_directory):
     shutil.move(src, dst)
 
 
-@torch.no_grad()
-def print_num_params(model: nn.Module):
-    """
-    Compute the number of parameters and separate into Flow/SPN parts.
-
-    Args:
-      model (nn.Module): Model with parameters.
-
-    """
-    if type(model) == DistributedDataParallel:
-        model = model.module
-
-    # Count all parameteres
-    sum_params = count_params(model)
-
-    # Count SPN parameters
-    spn_params = sum_params
-
-    # Print
-    logger.info(f"Number of parameters:")
-    # logger.info(f"- Total:  {sum_params / 1e6: >8.3f}M")
-    logger.info(
-        f"-   SPN:  {spn_params / 1e6: >8.3f}M ({spn_params / sum_params * 100:.1f}%)"
-    )
-    # logger.info(f"-    NN:  {nn_params / 1e6: >8.3f}M ({nn_params / sum_params * 100:.1f}%)")
-
-
 def preprocess(
     x: torch.Tensor,
     n_bits: int,
 ) -> torch.Tensor:
+    """Preprocess the image."""
     x = reduce_bits(x, n_bits)
-    # x = x.long()
     return x
 
 
 def reduce_bits(image: torch.Tensor, n_bits: int) -> torch.Tensor:
+    """Reduce the number of bits of the image."""
     image = image * 255
     if n_bits < 8:
         image = torch.floor(image / 2 ** (8 - n_bits))
@@ -449,7 +428,16 @@ def xor(a: bool, b: bool) -> bool:
 
 
 def loss_dict_to_str(running_loss_dict: Dict[str, float], logging_period: int) -> str:
-    """Create a joined string from a dictionary mapping str->float."""
+    """
+    Create a joined string from a dictionary mapping str->float.
+
+    Args:
+        running_loss_dict (Dict[str, float]): Dictionary mapping str->float.
+        logging_period (int): Logging period.
+
+    Returns:
+        str: Joined string.
+    """
     loss_str = ", ".join(
         [
             f"{key}: {value / logging_period:.2f}"
@@ -460,6 +448,11 @@ def loss_dict_to_str(running_loss_dict: Dict[str, float], logging_period: int) -
 
 
 def plot_tensor(x: torch.Tensor):
+    """Plot a tensor as an image.
+
+    Args:
+        x (torch.Tensor): Tensor to plot.
+    """
 
     plt.figure()
     if x.dim() == 4:
@@ -468,121 +461,6 @@ def plot_tensor(x: torch.Tensor):
     plt.show()
     plt.close()
 
-
-def build_tensorboard_writer(results_dir):
-    """
-    Build a tensorboard writer.
-    Args:
-        results_dir: Directory where to save the tensorboard files.
-
-    Returns:
-        A tensorboard writer.
-    """
-    return SummaryWriter(os.path.join(results_dir, "tensorboard"))
-
-
-def setup_experiment(
-    name: str,
-    args: argparse.Namespace,
-    remove_if_exists: bool = True,
-    with_tensorboard=True,
-):
-    """
-    Sets up the experiment.
-    Args:
-        name: The name of the experiment.
-    """
-    print(f"Arguments: {args}")
-
-    #
-    if args.dataset == "celeba":
-        args.dataset = "celeba-small"
-
-    # Check if we want to restore from a finished experiment
-    if args.load_and_eval is not None:
-        # Load args
-        old_dir: pathlib.Path = args.load_and_eval.expanduser()
-        args_file = os.path.join(old_dir, "args.json")
-        old_args = argparse.Namespace(**json.load(open(args_file)))
-        old_args.load_and_eval = args.load_and_eval
-        old_args.gpu = args.gpu
-
-        print("Loading from existing directory:", old_dir)
-        print("Loading with existing args:", pprint.pformat(old_args))
-
-        results_dir = old_dir
-        args = old_args
-    else:
-        # Create result directory
-        results_dir = make_results_dir(
-            results_dir=args.results_dir,
-            experiment_name=name,
-            tag=args.tag,
-            dataset_name=args.dataset,
-            remove_if_exists=remove_if_exists,
-        )
-        # Save args to file
-        save_args(results_dir, args)
-    print(f"Results directory: {results_dir}")
-    # Setup tensorboard
-    if with_tensorboard:
-        writer = build_tensorboard_writer(results_dir)
-    else:
-        writer = None
-
-    if torch.cuda.is_available():
-        device = torch.device("cuda:" + str(args.gpu))
-        print("Using GPU device", torch.cuda.current_device())
-    else:
-        device = torch.device("cpu")
-    print("Using device:", device)
-    seed_all_rng(args.seed)
-    cudnn.benchmark = True
-
-    # Image shape
-    image_shape: Shape = get_data_shape(args.dataset)
-
-    # Create RTPT object
-    rtpt = RTPT(
-        name_initials="SL",
-        experiment_name=name + "_" + str(args.tag),
-        max_iterations=args.epochs,
-    )
-
-    # Start the RTPT tracking
-    rtpt.start()
-
-    return (
-        args,
-        results_dir,
-        writer,
-        device,
-        image_shape,
-        rtpt,
-    )
-
-def setup_experiment(name: str, cfg: DictConfig, remove_if_exists: bool = False):
-    """
-    Sets up the experiment.
-    Args:
-        name: The name of the experiment.
-    """
-    # Create result directory
-    results_dir = make_results_dir(
-        results_dir=cfg.results_dir,
-        experiment_name=name,
-        tag=cfg.tag,
-        dataset_name=cfg.dataset,
-        remove_if_exists=remove_if_exists,
-    )
-    # Save args to file
-    # save_args(results_dir, cfg)
-
-    # Save args to file
-    print(f"Results directory: {results_dir}")
-    seed_all_rng(cfg.seed)
-    cudnn.benchmark = True
-    return results_dir, cfg
 
 def anneal_tau(epoch, max_epochs):
     """Anneal the softmax temperature tau based on the epoch progress."""
@@ -614,13 +492,6 @@ def save_samples(generate_samples, samples_dir, num_samples, nrow):
         torchvision.utils.save_image(grid, os.path.join(samples_dir, f"{i}.png"))
 
 
-from matplotlib.cm import tab10
-from matplotlib import cm
-
-TEXTWIDTH = 5.78853
-LINEWIDTH = 0.75
-ARROW_HEADWIDTH = 5
-colors = tab10.colors
 
 
 def get_figsize(scale: float, aspect_ratio=0.8) -> Tuple[float, float]:
@@ -635,12 +506,16 @@ def get_figsize(scale: float, aspect_ratio=0.8) -> Tuple[float, float]:
       Tuple: Tuple containing (width, height) of the figure.
 
     """
+    TEXTWIDTH = 5.78853
     height = aspect_ratio * TEXTWIDTH
     widht = TEXTWIDTH
     return (scale * widht, scale * height)
 
 
 def set_style():
+    """
+    Sets the style of the matplotlib plots to use LaTeX fonts and the SciencePlots package.
+    """
     matplotlib.use("pgf")
     plt.style.use(["science", "grid"])  # Need SciencePlots pip package
     matplotlib.rcParams.update(
@@ -654,6 +529,16 @@ def set_style():
 
 
 def plot_distribution(model, dataset_name, logger_wandb: WandbLogger = None):
+    """
+    Plots the learned probability density function (PDF) represented by the given model
+    on a 2D grid of points sampled from the specified dataset.
+
+    Args:
+        model (nn.Module): The model to use for generating the PDF.
+        dataset_name (str): The name of the dataset to sample points from.
+        logger_wandb (WandbLogger, optional): The logger to use for logging the plot image to WandB.
+            Defaults to None.
+    """
     with torch.no_grad():
         data, targets = generate_data(dataset_name, n_samples=1000)
         fig = plt.figure(figsize=get_figsize(1.0))
@@ -685,7 +570,7 @@ def plot_distribution(model, dataset_name, logger_wandb: WandbLogger = None):
             lw=0.5,
             s=10,
             alpha=0.5,
-            color=colors[1],
+            color=tab10.colors[1],
         )
 
         plt.xlabel("$X_0$")

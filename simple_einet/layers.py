@@ -8,13 +8,23 @@ from torch import nn
 from torch.nn import functional as F
 
 from simple_einet.type_checks import check_valid
-from simple_einet.utils import SamplingContext
+from simple_einet.sampling_utils import SamplingContext
 
 logger = logging.getLogger(__name__)
 
 
 class AbstractLayer(nn.Module, ABC):
+    """
+    This is the abstract base class for all layers in the SPN.
+    """
     def __init__(self, num_features: int, num_repetitions: int = 1):
+        """
+        Create an abstract layer.
+
+        Args:
+            num_features (int): Number of input features.
+            num_repetitions (int, optional): Number of layer repetitions in parallel. Defaults to 1.
+        """
         super().__init__()
         self.num_features = check_valid(num_features, int, 1)
         self.num_repetitions = check_valid(num_repetitions, int, 1)
@@ -23,17 +33,31 @@ class AbstractLayer(nn.Module, ABC):
     def sample(self, num_samples: int = None, context: SamplingContext = None) -> Union[SamplingContext, torch.Tensor]:
         """
         Sample from this layer.
+
         Args:
-            num_samples: Number of samples.
-            context: Sampling context.
+            num_samples (int, optional): Number of samples. Defaults to None.
+            context (SamplingContext, optional): Sampling context. Defaults to None.
 
         Returns:
-            torch.Tensor: Generated samples.
+            Union[SamplingContext, torch.Tensor]: Generated samples.
         """
         pass
 
 
 class Sum(AbstractLayer):
+    """
+    Sum Node Layer that sums over all children in a scope set.
+
+    Attributes:
+        num_sums_in (int): Number of input sum nodes.
+        num_sums_out (int): Multiplicity of a sum node for a given scope set.
+        dropout (torch.nn.Parameter): Dropout percentage.
+        weights (torch.nn.Parameter): Weights, such that each sumnode has its own weights.
+        out_shape (str): Output shape of the layer.
+        _bernoulli_dist (torch.distributions.Bernoulli): Bernoulli distribution for dropout.
+        _is_input_cache_enabled (bool): Whether input cache is enabled.
+        _input_cache (torch.Tensor): Cached input tensor.
+    """
     def __init__(
         self,
         num_sums_in: int,
@@ -49,11 +73,11 @@ class Sum(AbstractLayer):
         Output will be of shape [n, d, oc, r].
 
         Args:
-            in_channels (int): Number of output channels from the previous layer.
-            in_features (int): Number of input features.
-            out_channels (int): Multiplicity of a sum node for a given scope set.
-            num_repetitions(int): Number of layer repetitions in parallel.
-            dropout (float, optional): Dropout percentage.
+            num_sums_in (int): Number of input sum nodes.
+            num_features (int): Number of input features.
+            num_sums_out (int): Multiplicity of a sum node for a given scope set.
+            num_repetitions (int, optional): Number of layer repetitions in parallel. Defaults to 1.
+            dropout (float, optional): Dropout percentage. Defaults to 0.0.
         """
         super().__init__(num_features, num_repetitions)
 
@@ -220,6 +244,13 @@ class Sum(AbstractLayer):
 class Product(AbstractLayer):
     """
     Product Node Layer that chooses k scopes as children for a product node.
+
+    Attributes:
+        cardinality (int): Number of random children for each product node.
+        _conv_weights (torch.nn.Parameter): Convolution weights.
+        _pad (int): Padding to the next power of 2.
+        _out_features (int): Number of output features.
+        out_shape (str): Output shape of the layer.
     """
 
     def __init__(self, in_features: int, cardinality: int, num_repetitions: int = 1):
@@ -229,6 +260,7 @@ class Product(AbstractLayer):
         Args:
             in_features (int): Number of input features.
             cardinality (int): Number of random children for each product node.
+            num_repetitions (int, optional): Number of layer repetitions in parallel. Defaults to 1.
         """
 
         super().__init__(in_features, num_repetitions)
@@ -333,6 +365,13 @@ class CrossProduct(AbstractLayer):
         res += [n1 * n2]
 
     TODO: Generalize to k regions (cardinality = k).
+
+    Attributes:
+        cardinality (int): Number of random children for each product node.
+        _pad (int): Padding to the next power of 2.
+        _out_features (int): Number of output features.
+        out_shape (str): Output shape of the layer.
+        _scopes (List[List[int]]): List of scopes for each product child.
     """
 
     def __init__(self, in_features: int, in_channels: int, num_repetitions: int = 1):

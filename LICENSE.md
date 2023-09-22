@@ -1,6 +1,6 @@
 The MIT License (MIT)
 
-Copyright (c) 2022 Steven Lang
+Copyright (c) 2023 Steven Braun
 
 Permission is hereby granted, free of charge, to any person obtaining
 a copy of this software and associated documentation files (the

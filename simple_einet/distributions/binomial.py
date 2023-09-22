@@ -1,7 +1,7 @@
 from torch import distributions as dist, nn
 import numpy as np
 import torchvision.models as models
-from simple_einet.utils import SamplingContext
+from simple_einet.sampling_utils import SamplingContext
 from typing import List, Tuple, Union
 import torch
 from torch import nn
@@ -17,6 +17,8 @@ from torch.nn import functional as F
 
 
 class Binomial(AbstractLeaf):
+    """Binomial layer. Maps each input feature to its binomial log likelihood."""
+
     def __init__(
         self,
         num_features: int,
@@ -25,6 +27,16 @@ class Binomial(AbstractLeaf):
         num_repetitions: int,
         total_count: int,
     ):
+        """
+        Initializes a Binomial distribution with the given parameters.
+
+        Args:
+            num_features (int): The number of features in the input data.
+            num_channels (int): The number of channels in the input data.
+            num_leaves (int): The number of leaves in the tree.
+            num_repetitions (int): The number of repetitions for each leaf.
+            total_count (int): The total number of trials for the Binomial distribution.
+        """
         super().__init__(
             num_features=num_features,
             num_channels=num_channels,
@@ -46,11 +58,32 @@ class Binomial(AbstractLeaf):
 
 
 class CustomBinomial:
+    """
+    A custom implementation of the Binomial distribution, with differentiable sampling.
+
+    Args:
+        probs (torch.Tensor): The probability of success for each trial. Should have shape (batch_size,).
+        total_count (int): The total number of trials.
+
+    Attributes:
+        probs (torch.Tensor): The probability of success for each trial. Should have shape (batch_size,).
+        total_count (int): The total number of trials.
+    """
+
     def __init__(self, probs, total_count):
         self.probs = probs
         self.total_count = total_count
 
     def sample(self, sample_shape: Tuple[int]):
+        """
+        Draws samples from the distribution using a normal distribution as approximation.
+
+        Args:
+            sample_shape (Tuple[int]): The shape of the desired sample.
+
+        Returns:
+            torch.Tensor: A tensor of shape (sample_shape[0], batch_size), containing the drawn samples.
+        """
         # Normal approximation to be differentiable
         mu = self.total_count * self.probs
         sigma = mu * (1 - self.probs)
@@ -62,10 +95,41 @@ class CustomBinomial:
         return samples
 
     def log_prob(self, x):
+        """
+        Computes the log-probability of a given value under the distribution.
+
+        Args:
+            x (torch.Tensor): The value(s) for which to compute the log-probability. Should have shape (batch_size,).
+
+        Returns:
+            torch.Tensor: A tensor of shape (batch_size,), containing the log-probabilities.
+        """
         return dist.Binomial(probs=self.probs, total_count=self.total_count).log_prob(x)
 
 
 class ConditionalBinomial(AbstractLeaf):
+    """
+    A class representing a conditional binomial distribution.
+
+    Allows a conditional function to be used to condition the binomial distribution.
+
+    Args:
+        num_features (int): The number of features in the input tensor.
+        num_channels (int): The number of channels in the input tensor.
+        num_leaves (int): The number of leaves in the tree.
+        num_repetitions (int): The number of repetitions.
+        total_count (int): The total count of the binomial distribution.
+        cond_fn (nn.Module): The module used to condition the binomial distribution.
+        cond_idxs (Union[List[int], torch.Tensor]): The indices of the conditioned input.
+
+    Attributes:
+        total_count (int): The total count of the binomial distribution.
+        cond_fn (nn.Module): The module used to condition the binomial distribution.
+        cond_idxs (Union[List[int], torch.Tensor]): The indices of the conditioned input.
+        probs_conditioned_base (nn.Parameter): The base parameters for the conditioned binomial distribution.
+        probs_unconditioned (nn.Parameter): The parameters for the unconditioned binomial distribution.
+    """
+
     def __init__(
         self,
         num_features: int,
@@ -76,6 +140,9 @@ class ConditionalBinomial(AbstractLeaf):
         cond_fn: nn.Module,
         cond_idxs: Union[List[int], torch.Tensor],
     ):
+        """
+        Initializes the ConditionalBinomial class.
+        """
         super().__init__(
             num_features=num_features,
             num_channels=num_channels,
@@ -129,6 +196,16 @@ class ConditionalBinomial(AbstractLeaf):
         return d
 
     def forward(self, x, marginalized_scopes: List[int]):
+        """
+        Computes the forward pass of the ConditionalBinomial class.
+
+        Args:
+            x (torch.Tensor): The input tensor.
+            marginalized_scopes (List[int]): The marginalized scopes.
+
+        Returns:
+            The output tensor.
+        """
         # Get conditional input (TODO: make this flexible with an index array defined during construction)
         x_cond = x[:, :, self.cond_idxs, None, None]
         d = self.get_conditioned_distribution(x_cond)
@@ -142,6 +219,16 @@ class ConditionalBinomial(AbstractLeaf):
         return x
 
     def sample(self, num_samples: int = None, context: SamplingContext = None) -> torch.Tensor:
+        """
+        Samples from the ConditionalBinomial distribution.
+
+        Args:
+            num_samples (int): The number of samples to generate.
+            context (SamplingContext): The sampling context.
+
+        Returns:
+            The generated samples.
+        """
         ev = context.evidence
         x_cond = ev[:, :, self.cond_idxs, None, None]
         d = self.get_conditioned_distribution(x_cond)
@@ -174,4 +261,10 @@ class ConditionalBinomial(AbstractLeaf):
         return samples
 
     def _get_base_distribution(self) -> dist.Distribution:
+        """
+        Gets the base distribution.
+
+        Returns:
+            The base distribution.
+        """
         raise NotImplementedError("This should not happen.")

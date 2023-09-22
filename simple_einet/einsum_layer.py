@@ -8,7 +8,7 @@ from icecream import ic
 
 from simple_einet.layers import AbstractLayer
 from simple_einet.type_checks import check_valid
-from simple_einet.utils import SamplingContext, index_one_hot, diff_sample_one_hot
+from simple_einet.sampling_utils import SamplingContext, diff_sample_one_hot, index_one_hot
 
 
 def logsumexp(tensors, mask=None, dim=-1):
@@ -18,11 +18,12 @@ def logsumexp(tensors, mask=None, dim=-1):
     Logsumexp with custom scalar mask to allow for negative values in the sum.
 
     Args:
-      tensors:
-      mask:  (Default value = None)
+        tensors (torch.Tensor, List[torch.Tensor]): The tensors to sum.
+        mask (torch.Tensor, optional): The mask to apply to the sum. Defaults to None.
+        dim (int, optional): The dimension to sum over. Defaults to -1.
 
     Returns:
-
+        torch.Tensor: The summed tensor.
     """
     # Ensure that everything is a tensor
     if type(tensors) == list or type(tensors) == tuple:
@@ -39,6 +40,23 @@ def logsumexp(tensors, mask=None, dim=-1):
 
 
 class LinsumLayer(AbstractLayer):
+    """
+    Similar to Einsum but with a linear combination of the input channels for each output channel compared to
+    the cross-product combination that is applied in an EinsumLayer.
+
+    Attributes:
+        num_sums_in (int): The number of input sums.
+        num_sums_out (int): The number of output sums.
+        num_repetitions (int): The number of repetitions of the layer.
+        weights (torch.Tensor): The weights of the layer.
+        dropout (float): The dropout probability.
+        _bernoulli_dist (torch.distributions.Bernoulli): The Bernoulli distribution used for dropout.
+        _is_input_cache_enabled (bool): Whether the input cache is enabled.
+        _input_cache_left (torch.Tensor): The left input cache.
+        _input_cache_right (torch.Tensor): The right input cache.
+        cardinality (int): The cardinality of the layer.
+    """
+
     def __init__(
         self,
         num_features: int,
@@ -47,6 +65,16 @@ class LinsumLayer(AbstractLayer):
         num_repetitions: int = 1,
         dropout: float = 0.0,
     ):
+        """
+        Initializes a LinsumLayer instance.
+
+        Args:
+            num_features (int): The number of input features.
+            num_sums_in (int): The number of input sums.
+            num_sums_out (int): The number of output sums.
+            num_repetitions (int, optional): The number of times to repeat the layer. Defaults to 1.
+            dropout (float, optional): The dropout probability. Defaults to 0.0.
+        """
         super().__init__(num_features, num_repetitions)
 
         self.num_sums_in = check_valid(num_sums_in, int, 1)
@@ -54,7 +82,6 @@ class LinsumLayer(AbstractLayer):
         cardinality = 2  # Fixed to binary graphs for now
         self.cardinality = check_valid(cardinality, int, 2, num_features + 1)
         self.num_features_out = np.ceil(self.num_features / self.cardinality).astype(int)
-        self._pad = 0
 
         ws = self._init_weights()
 
@@ -73,6 +100,9 @@ class LinsumLayer(AbstractLayer):
         self.out_shape = f"(N, {self.num_features_out}, {self.num_sums_out}, {self.num_repetitions})"
 
     def _init_weights(self):
+        """
+        Initializes the weights of the layer.
+        """
         # Weights, such that each sumnode has its own weights
         ws = torch.randn(
             self.num_features // self.cardinality,
@@ -138,7 +168,6 @@ class LinsumLayer(AbstractLayer):
         # SUM LAYER #
         #############
 
-
         # Prepare constants
         # If dropout at inference time is set, use this instead
         if dropout_inference is not None:
@@ -202,7 +231,6 @@ class LinsumLayer(AbstractLayer):
             dropout_indices = torch.log(1 - dropout_indices)
             prod_output = prod_output + dropout_indices
 
-
         # Get log weights
         log_weights = self._get_normalized_log_weights().unsqueeze(0)
         prob = torch.logsumexp(prod_output + log_weights, dim=2)  # N x D/2 x Sout x R
@@ -214,10 +242,19 @@ class LinsumLayer(AbstractLayer):
 
         return prob
 
-    def sample(
-        self, num_samples: int, context: SamplingContext, differentiable=False
-    ) -> Union[SamplingContext, torch.Tensor]:
+    def sample(self, num_samples: int, context: SamplingContext) -> SamplingContext:
+        """
+        Samples from the weights of the EinsumLayer and returns a SamplingContext object
+        containing the sampled indices.
 
+        Args:
+            num_samples (int): The number of samples to generate.
+            context (SamplingContext): The SamplingContext object containing the indices
+                used for sampling.
+
+        Returns:
+            SamplingContext: The SamplingContext object containing the sampled indices.
+        """
         # Sum weights are of shape: [D, IC//2, IC//2, OC, R]
         # We now want to use `indices` to access one in_channel for each in_feature x
         # out_channels block index is of size in_feature
@@ -382,6 +419,16 @@ class EinsumLayer(AbstractLayer):
         num_repetitions: int = 1,
         dropout: float = 0.0,
     ):
+        """
+        EinsumLayer is a PyTorch module that implements the Einsum layer for the Einet model.
+
+        Args:
+            num_features (int): The number of input features.
+            num_sums_in (int): The number of input sum nodes.
+            num_sums_out (int): The number of output sum nodes.
+            num_repetitions (int, optional): The number of repetitions. Defaults to 1.
+            dropout (float, optional): The dropout probability. Defaults to 0.0.
+        """
         super().__init__(num_features, num_repetitions)
 
         self.num_sums_in = check_valid(num_sums_in, int, 1)
@@ -389,7 +436,6 @@ class EinsumLayer(AbstractLayer):
         cardinality = 2  # Fixed to binary graphs for now
         self.cardinality = check_valid(cardinality, int, 2, num_features + 1)
         self.num_features_out = np.ceil(self.num_features / self.cardinality).astype(int)
-        self._pad = 0
 
         # Weights, such that each sumnode has its own weights
         ws = torch.randn(
@@ -484,10 +530,17 @@ class EinsumLayer(AbstractLayer):
 
         return prob
 
-    def sample(
-        self, num_samples: int, context: SamplingContext, differentiable=False
-    ) -> Union[SamplingContext, torch.Tensor]:
+    def sample(self, num_samples: int, context: SamplingContext) -> SamplingContext:
+        """
+        Samples from the weights of the EinsumLayer using the provided SamplingContext.
 
+        Args:
+            num_samples (int): The number of samples to generate.
+            context (SamplingContext): The SamplingContext to use for sampling.
+
+        Returns:
+            SamplingContext: The updated SamplingContext.
+        """
         # Sum weights are of shape: [D, IC//2, IC//2, OC, R]
         # We now want to use `indices` to access one in_channel for each in_feature x
         # out_channels block index is of size in_feature
@@ -541,9 +594,6 @@ class EinsumLayer(AbstractLayer):
         # Apply softmax to ensure they are proper probabilities
         weights = weights.view(num_samples, out_features, in_channels**2)
         log_weights = F.log_softmax(weights * context.temperature_sums, dim=2)
-
-        # Clone for discrete validity check
-        # log_weights_disc = log_weights.clone()
 
         # If evidence is given, adjust the weights with the likelihoods of the observed paths
         if self._is_input_cache_enabled and self._input_cache_left is not None:
@@ -628,12 +678,30 @@ class EinsumLayer(AbstractLayer):
 
 
 class EinsumMixingLayer(AbstractLayer):
+    """
+    A PyTorch module that implements a mixing layer using the Einstein summation convention.
+
+    Attributes:
+        weights (nn.Parameter): The learnable weights of the layer.
+        num_sums_in (int): The number of input summation nodes.
+        num_sums_out (int): The number of output summation nodes.
+        out_features (int): The number of output features.
+    """
+
     def __init__(
         self,
         num_features: int,
         num_sums_in: int,
         num_sums_out: int,
     ):
+        """
+        Creates a new EinsumMixingLayer.
+
+        Args:
+            num_features (int): The number of input features.
+            num_sums_in (int): The number of input summation nodes.
+            num_sums_out (int): The number of output summation nodes.
+        """
         super().__init__(num_features, num_repetitions=1)
 
         self.num_sums_in = check_valid(num_sums_in, int, 1)
@@ -654,6 +722,7 @@ class EinsumMixingLayer(AbstractLayer):
         self._input_cache_right = None
 
     def forward(self, x):
+        """Forward pass of the layer."""
         # Save input if input cache is enabled
         if self._is_input_cache_enabled:
             self._input_cache = x.clone()
@@ -676,8 +745,23 @@ class EinsumMixingLayer(AbstractLayer):
         self,
         num_samples: int = None,
         context: SamplingContext = None,
-        differentiable=False,
-    ) -> Union[SamplingContext, torch.Tensor]:
+    ) -> SamplingContext:
+        """
+        Samples from the EinsumLayer.
+
+        Args:
+            num_samples (int, optional): The number of samples to generate. Defaults to None.
+            context (SamplingContext, optional): The sampling context. Defaults to None.
+
+        Returns:
+            SamplingContext: The updated sampling context.
+        """
+
+    def sample(
+        self,
+        num_samples: int = None,
+        context: SamplingContext = None,
+    ) -> SamplingContext:
         # Sum weights are of shape: [W, H, IC, OC, R]
         # We now want to use `indices` to access one in_channel for each in_feature x num_sums_out block
         # index is of size in_feature
@@ -755,6 +839,20 @@ class EinsumMixingLayer(AbstractLayer):
 
 
 class MixingLayer(AbstractLayer):
+    """
+    A PyTorch module that implements a linear mixing layer.
+
+    Attributes:
+        weights (nn.Parameter): The learnable weights of the layer.
+        num_sums_in (int): The number of input summation nodes.
+        num_sums_out (int): The number of output summation nodes.
+        out_features (int): The number of output features.
+        _is_input_cache_enabled (bool): Whether the input cache is enabled.
+        _input_cache_left (torch.Tensor): The left input cache.
+        _input_cache_right (torch.Tensor): The right input cache.
+        _bernoulli_dist (torch.distributions.Bernoulli): The Bernoulli distribution.
+    """
+
     def __init__(
         self,
         num_features: int,
@@ -762,6 +860,15 @@ class MixingLayer(AbstractLayer):
         num_sums_out: int,
         dropout: float = 0.0,
     ):
+        """
+        Initializes an EinsumLayer instance.
+
+        Args:
+            num_features (int): Number of input and output features.
+            num_sums_in (int): Number of input sum nodes.
+            num_sums_out (int): Number of output sum nodes.
+            dropout (float, optional): Dropout probability. Defaults to 0.0.
+        """
         super().__init__(num_features, num_repetitions=1)
 
         self.num_sums_in = check_valid(num_sums_in, int, 1)
@@ -790,13 +897,13 @@ class MixingLayer(AbstractLayer):
         return F.log_softmax(self.weights, dim=2)
 
     def forward(self, x):
+        """Forward pass of the layer."""
         # Save input if input cache is enabled
         if self._is_input_cache_enabled:
             self._input_cache = x.clone()
 
         # Dimensions
         N, D, IC, R = x.size()
-
 
         # Apply dropout: Set random sum node children to 0 (-inf in log domain)
         if self.dropout > 0.0 and self.training:
@@ -808,7 +915,6 @@ class MixingLayer(AbstractLayer):
                 invalid_index = dropout_indices.sum(3) == dropout_indices.shape[3]
             dropout_indices = torch.log(1 - dropout_indices)
             x = x + dropout_indices
-
 
         # Get log weights
         log_weights = self._get_normalized_log_weights().unsqueeze(0)
@@ -853,9 +959,18 @@ class MixingLayer(AbstractLayer):
         self,
         num_samples: int = None,
         context: SamplingContext = None,
-        differentiable=False,
-    ) -> Union[SamplingContext, torch.Tensor]:
-        raise NotImplementedError("Not yet implemented for MixingLayer")
+    ) -> SamplingContext:
+        """
+        Samples from the mixing layer.
+
+        Args:
+            num_samples (int): The number of samples to generate.
+            context (SamplingContext): The sampling context.
+
+        Returns:
+            SamplingContext: The updated sampling context.
+        """
+        # raise NotImplementedError("Not yet implemented for MixingLayer")
         # Sum weights are of shape: [W, H, IC, OC, R]
         # We now want to use `indices` to access one in_channel for each in_feature x num_sums_out block
         # index is of size in_feature
@@ -930,24 +1045,3 @@ class MixingLayer(AbstractLayer):
         return "num_features={}, num_sums_in={}, num_sums_out={}".format(
             self.num_features, self.num_sums_in, self.num_sums_out, self.num_repetitions
         )
-
-
-if __name__ == "__main__":
-    x = torch.rand(1, 3, 4)
-    y = torch.rand(1, 3, 4)
-    z = torch.rand(1, 3, 4)
-
-    print(logsumexp((logsumexp((x, y), mask=[1, 1]), z), mask=[1, -1]))
-    print(logsumexp(torch.stack([x, y, z], dim=-1), mask=[1, 1, -1]))
-
-    # layer = LinsumLayer(num_features=2, num_sums_in=3, num_sums_out=10, num_repetitions=7, dropout=0.1)
-    # mixing = MixingLayer(num_features=1, num_sums_in=7, num_sums_out=10)
-
-    # log_exp = torch.randn(1, 2, 3, 7)
-    # log_var = torch.rand_like(log_exp)
-
-    # # x = layer(log_exp)
-    # # x = mixing(x)
-
-    # log_exp, log_var = layer.forward_tdi(log_exp, log_var)
-    # log_exp, log_var = mixing.forward_tdi(log_exp, log_var)
