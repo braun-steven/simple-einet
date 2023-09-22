@@ -20,7 +20,7 @@ hydra:
 # Default set of configurations.
 data_dir: "${oc.env:DATA_DIR}/"
 results_dir: "${oc.env:RESULTS_DIR}/${project_name}"
-project_name: "simple-einet-dc"
+project_name: "simple-einet"
 lr: 0.0005
 batch_size: 64
 n_bits: 8
@@ -33,7 +33,7 @@ max_sigma: 2.0
 dry_run: False
 seed: ???
 log_interval: 10
-classification: True
+classification: False
 device: "cuda"
 debug: False
 S: 10
@@ -46,7 +46,7 @@ epochs: 10
 load_and_eval: False
 cp: False
 dist: "normal"
-precision: 16
+precision: "bf16-mixed"
 group_tag: ???
 tag: ???
 wandb: False
@@ -55,5 +55,6 @@ profiler: ???
 log_weights: False
 dataset: ???
 num_classes: 10
-init_leaf_data: True
+init_leaf_data: False
 einet_mixture: False
+torch_compile: False
