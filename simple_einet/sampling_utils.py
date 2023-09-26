@@ -1,5 +1,6 @@
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
+from enum import Enum
 
 import torch
 from torch import nn
@@ -36,7 +37,6 @@ def provide_evidence(
 
     # Run forward pass in given context
     with context():
-
         if evidence is not None:
             # Enter
             for module in spn.modules():
@@ -123,36 +123,95 @@ def get_context(differentiable):
         return torch.no_grad()
 
 
-def diff_sample_one_hot(logits: torch.Tensor, dim: int, mode: str, hard: bool, tau: float) -> torch.Tensor:
+class DiffSampleMethod(str, Enum):
+    """Enum for differentiable sampling methods."""
+
+    SIMPLE = "SIMPLE"
+    GUMBEL = "GUMBEL"
+
+
+def sample_gumbel(shape, eps=1e-20, device="cpu"):
+    """
+    Samples from a Gumbel distribution with the given shape.
+
+    Args:
+        shape (tuple): The shape of the desired output tensor.
+        eps (float, optional): A small value to avoid numerical instability. Defaults to 1e-20.
+
+    Returns:
+        torch.Tensor: A tensor of the specified shape sampled from a Gumbel distribution.
+    """
+    U = torch.rand(shape, device=device)
+    g = -torch.log(-torch.log(U + eps) + eps)
+    return g
+
+
+def SIMPLE(logits, dim: int) -> torch.Tensor:
+    """
+    Sample from the distribution using SIMPLE[1].
+
+    [1] https://github.com/UCLA-StarAI/SIMPLE, https://arxiv.org/abs/2210.01941
+
+    Args:
+        logits (torch.Tensor): Input tensor of shape [*, n_class].
+        dim (int): Dimension along which to sample.
+
+    Returns:
+        torch.Tensor: Output tensor of shape [*, n_class], an one-hot vector.
+    """
+    y = F.softmax(logits, dim=dim)
+    y = logits + sample_gumbel(logits.size(), device=logits.device)
+    y_perturbed = F.softmax(y, dim=dim)
+
+    shape = y.size()
+    index = y_perturbed.max(dim=dim, keepdim=True)[1]
+    y_hard = torch.zeros_like(y_perturbed)
+    y_hard.scatter_(dim, index, 1)
+    y_hard = y_hard.view(*shape)
+    return (y_hard - y).detach() + y
+
+
+def sample_categorical_differentiably(
+    logits: torch.Tensor,
+    dim: int,
+    is_mpe: bool,
+    hard: bool,
+    tau: float,
+    method=DiffSampleMethod.SIMPLE,
+) -> torch.Tensor:
     """
     Perform differentiable sampling/mpe on the given input along a specific dimension.
-
-    Modes:
-    - "sample": Perform sampling
-    - "argmax": Perform mpe
 
     Args:
       logits(torch.Tensor): Logits from which the sampling should be done.
       dim(int): Dimension along which to sample from.
-      mode(str): Mode as described above.
+      is_mpe(bool): Whether to perform MPE sampling.
       hard(bool): Whether to perform hard or soft sampling.
       tau(float): Temperature for soft sampling.
+      method(DiffSampleMethod): Method to use for differentiable sampling. Must be either DiffSampleMethod.SIMPLE or DiffSampleMethod.GUMBEL.
 
     Returns:
       torch.Tensor: Indices encoded as one-hot tensor along the given dimension `dim`.
-
     """
-    if mode == "sample":
-        return F.gumbel_softmax(logits=logits, hard=hard, tau=tau, dim=dim)
-    elif mode == "argmax":
-        # Differentiable argmax (see gumbel softmax trick code)
-        y_soft = logits.softmax(dim)
-        index = y_soft.max(dim, keepdim=True)[1]
-        y_hard = torch.zeros_like(logits, memory_format=torch.legacy_contiguous_format).scatter_(dim, index, 1.0)
-        ret = y_hard - y_soft.detach() + y_soft
-        return ret
+    if not is_mpe:
+        if method == DiffSampleMethod.SIMPLE:
+            return SIMPLE(logits, dim=dim)
+        elif method == DiffSampleMethod.GUMBEL:
+            return F.gumbel_softmax(logits=logits, hard=hard, tau=tau, dim=dim)
+        else:
+            raise Exception(f"Invalid method option (got {method}). Must be either 'SIMPLE' or 'GUMBEL'.")
     else:
-        raise Exception(f"Invalid mode option (got {mode}). Must be either 'sample' or 'argmax'.")
+        if method == DiffSampleMethod.SIMPLE:
+            return SIMPLE(logits, dim=dim)
+        elif method == DiffSampleMethod.GUMBEL:
+            # Differentiable argmax (see gumbel softmax trick code in pytorch)
+            y_soft = logits.softmax(dim)
+            index = y_soft.max(dim, keepdim=True)[1]
+            y_hard = torch.zeros_like(logits, memory_format=torch.legacy_contiguous_format).scatter_(dim, index, 1.0)
+            ret = y_hard - y_soft.detach() + y_soft
+            return ret
+        else:
+            raise Exception(f"Invalid method option (got {method}). Must be either 'SIMPLE' or 'GUMBEL'.")
 
 
 def index_one_hot(tensor: torch.Tensor, index: torch.Tensor, dim: int) -> torch.Tensor:
@@ -232,15 +291,11 @@ def init_einet_stats(einet: "Einet", dataloader: torch.utils.data.DataLoader):
     stats_mean /= len(dataloader)
     stats_std /= len(dataloader)
 
-
-
     from simple_einet.distributions.normal import Normal
     from simple_einet.einet import Einet, EinetMixture
 
-
     # Set leaf parameters for normal distribution
     if einet.config.leaf_type == Normal:
-
         if type(einet) == Einet:
             einets = [einet]
         elif type(einet) == EinetMixture:
@@ -263,5 +318,11 @@ def init_einet_stats(einet: "Einet", dataloader: torch.utils.data.DataLoader):
         # Set leaf parameters
         for net in einets:
             # Add noise to ensure that values are not completely equal along repetitions and einets
-            net.leaf.base_leaf.means.data = stats_mean_v + 0.1 * torch.normal(torch.zeros_like(stats_mean_v), torch.std(stats_mean_v))
-            net.leaf.base_leaf.log_stds.data = torch.log(stats_std_v + 1e-3 + torch.clamp(0.1 * torch.normal(torch.zeros_like(stats_std_v), torch.std(stats_std_v)), min=0.0))
+            net.leaf.base_leaf.means.data = stats_mean_v + 0.1 * torch.normal(
+                torch.zeros_like(stats_mean_v), torch.std(stats_mean_v)
+            )
+            net.leaf.base_leaf.log_stds.data = torch.log(
+                stats_std_v
+                + 1e-3
+                + torch.clamp(0.1 * torch.normal(torch.zeros_like(stats_std_v), torch.std(stats_std_v)), min=0.0)
+            )

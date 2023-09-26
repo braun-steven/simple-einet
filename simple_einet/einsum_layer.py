@@ -8,7 +8,7 @@ from icecream import ic
 
 from simple_einet.layers import AbstractLayer
 from simple_einet.type_checks import check_valid
-from simple_einet.sampling_utils import SamplingContext, diff_sample_one_hot, index_one_hot
+from simple_einet.sampling_utils import SamplingContext, sample_categorical_differentiably, index_one_hot
 
 
 def logsumexp(tensors, mask=None, dim=-1):
@@ -344,21 +344,18 @@ class LinsumLayer(AbstractLayer):
 
         else:  # Differentiable sampling
             raise NotImplementedError()
-            if context.is_mpe:
-                raise NotImplementedError()
-            else:
-                indices = diff_sample_one_hot(
-                    log_weights,
-                    dim=-1,
-                    mode="sample",
-                    hard=context.hard,
-                    tau=context.tau,
-                )
-                indices = indices.unsqueeze(-1)
-                indices_a = (indices * self.unraveled_channel_indices_oh_0).sum(-2)
-                indices_b = (indices * self.unraveled_channel_indices_oh_1).sum(-2)
-                indices = torch.stack((indices_a, indices_b), dim=2)
-                indices = indices.view(num_samples, -1, in_channels)
+            indices = sample_categorical_differentiably(
+                log_weights,
+                dim=-1,
+                is_mpe=context.is_mpe,
+                hard=context.hard,
+                tau=context.tau,
+            )
+            indices = indices.unsqueeze(-1)
+            indices_a = (indices * self.unraveled_channel_indices_oh_0).sum(-2)
+            indices_b = (indices * self.unraveled_channel_indices_oh_1).sum(-2)
+            indices = torch.stack((indices_a, indices_b), dim=2)
+            indices = indices.view(num_samples, -1, in_channels)
 
         context.indices_out = indices
         return context
@@ -627,21 +624,18 @@ class EinsumLayer(AbstractLayer):
             indices = indices.view(num_samples, -1)
 
         else:  # Differentiable sampling
-            if context.is_mpe:
-                raise NotImplementedError()
-            else:
-                indices = diff_sample_one_hot(
-                    log_weights,
-                    dim=-1,
-                    mode="sample",
-                    hard=context.hard,
-                    tau=context.tau,
-                )
-                indices = indices.unsqueeze(-1)
-                indices_a = (indices * self.unraveled_channel_indices_oh_0).sum(-2)
-                indices_b = (indices * self.unraveled_channel_indices_oh_1).sum(-2)
-                indices = torch.stack((indices_a, indices_b), dim=2)
-                indices = indices.view(num_samples, -1, in_channels)
+            indices = sample_categorical_differentiably(
+                log_weights,
+                dim=-1,
+                is_mpe=context.is_mpe,
+                hard=context.hard,
+                tau=context.tau,
+            )
+            indices = indices.unsqueeze(-1)
+            indices_a = (indices * self.unraveled_channel_indices_oh_0).sum(-2)
+            indices_b = (indices * self.unraveled_channel_indices_oh_1).sum(-2)
+            indices = torch.stack((indices_a, indices_b), dim=2)
+            indices = indices.view(num_samples, -1, in_channels)
 
         context.indices_out = indices
         return context
@@ -809,16 +803,13 @@ class EinsumMixingLayer(AbstractLayer):
 
                 indices = dist.sample()
         else:
-            if context.is_mpe:
-                raise NotImplementedError
-            else:
-                indices = diff_sample_one_hot(
-                    log_weights,
-                    mode="sample",
-                    dim=2,
-                    hard=context.hard,
-                    tau=context.tau,
-                )
+            indices = sample_categorical_differentiably(
+                log_weights,
+                dim=2,
+                is_mpe=context.is_mpe,
+                hard=context.hard,
+                tau=context.tau,
+            )
 
         context.indices_out = indices
         return context
@@ -1018,16 +1009,13 @@ class MixingLayer(AbstractLayer):
 
                 indices = dist.sample()
         else:
-            if context.is_mpe:
-                raise NotImplementedError
-            else:
-                indices = diff_sample_one_hot(
-                    log_weights,
-                    mode="sample",
-                    dim=2,
-                    hard=context.hard,
-                    tau=context.tau,
-                )
+            indices = sample_categorical_differentiably(
+                log_weights,
+                is_mpe=context.is_mpe,
+                dim=2,
+                hard=context.hard,
+                tau=context.tau,
+            )
 
         context.indices_out = indices
         return context
