@@ -107,7 +107,6 @@ class DifferentiableBinomial:
         samples.clip_(min=0, max=self.total_count)
         return samples
 
-
     def log_prob(self, x):
         """
         Computes the log-probability of a given value under the distribution.

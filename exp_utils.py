@@ -33,7 +33,6 @@ from torch.utils.tensorboard import SummaryWriter
 from torchvision.transforms import ToTensor
 
 
-
 from matplotlib.cm import tab10
 from matplotlib import cm
 
@@ -112,9 +111,7 @@ def get_data_dir(dataset_name: str):
     home_dir = os.getenv("HOME")
 
     # Merge home directory with results, project, dataset and directories
-    data_dir = os.path.join(
-        home_dir, "data", "simple-einet-diff-sampling", dataset_name
-    )
+    data_dir = os.path.join(home_dir, "data", "simple-einet-diff-sampling", dataset_name)
 
     # Create directory if it does not exist
     os.makedirs(data_dir, exist_ok=True)
@@ -233,11 +230,7 @@ def seed_all_rng(seed=None):
         seed (int): if None, will use a strong random seed.
     """
     if seed is None:
-        seed = (
-            os.getpid()
-            + int(datetime.now().strftime("%S%f"))
-            + int.from_bytes(os.urandom(2), "big")
-        )
+        seed = os.getpid() + int(datetime.now().strftime("%S%f")) + int.from_bytes(os.urandom(2), "big")
         logger.info("Using a generated random seed {}".format(seed))
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -305,16 +298,12 @@ def auto_scale_workers(cfg, num_workers: int):
     frozen = cfg.is_frozen()
     cfg.defrost()
 
-    assert (
-        cfg.train.batch_size % old_world_size == 0
-    ), "Invalid REFERENCE_WORLD_SIZE in config!"
+    assert cfg.train.batch_size % old_world_size == 0, "Invalid REFERENCE_WORLD_SIZE in config!"
     scale = num_workers / old_world_size
     bs = cfg.train.batch_size = int(round(cfg.train.batch_size * scale))
     lr = cfg.solver.LR = cfg.solver.LR * scale
     max_iter = cfg.solver.max_iter = int(round(cfg.solver.max_iter / scale))
-    warmup_iter = cfg.solver.scheduler.warmuplr.iters = int(
-        round(cfg.solver.scheduler.warmuplr.iters / scale)
-    )
+    warmup_iter = cfg.solver.scheduler.warmuplr.iters = int(round(cfg.solver.scheduler.warmuplr.iters / scale))
     # cfg.solver.steps = tuple(int(round(s / scale)) for s in cfg.solver.steps)
     cfg.test.eval_period = int(round(cfg.test.eval_period / scale))
     cfg.checkpoints.period = int(round(cfg.checkpoints.period / scale))
@@ -344,9 +333,7 @@ def detect_anomaly(losses: torch.Tensor, iteration: int):
         torch.cuda.Stream(device=losses.device)
     ) if losses.device.type == "cuda" else contextlib.nullcontext():
         if not torch.isfinite(losses).all():
-            raise FloatingPointError(
-                "Loss became infinite or NaN at iteration={}!".format(iteration)
-            )
+            raise FloatingPointError("Loss became infinite or NaN at iteration={}!".format(iteration))
 
 
 def catch_exception(output_directory: str, e: Exception):
@@ -433,12 +420,7 @@ def loss_dict_to_str(running_loss_dict: Dict[str, float], logging_period: int) -
     Returns:
         str: Joined string.
     """
-    loss_str = ", ".join(
-        [
-            f"{key}: {value / logging_period:.2f}"
-            for key, value in running_loss_dict.items()
-        ]
-    )
+    loss_str = ", ".join([f"{key}: {value / logging_period:.2f}" for key, value in running_loss_dict.items()])
     return loss_str
 
 
@@ -481,12 +463,8 @@ def load_from_checkpoint(results_dir, load_fn, args):
 def save_samples(generate_samples, samples_dir, num_samples, nrow):
     for i in range(5):
         samples = generate_samples(num_samples)
-        grid = torchvision.utils.make_grid(
-            samples, nrow=nrow, pad_value=0.0, normalize=True
-        )
+        grid = torchvision.utils.make_grid(samples, nrow=nrow, pad_value=0.0, normalize=True)
         torchvision.utils.save_image(grid, os.path.join(samples_dir, f"{i}.png"))
-
-
 
 
 def get_figsize(scale: float, aspect_ratio=0.8) -> Tuple[float, float]:
@@ -547,13 +525,7 @@ def plot_distribution(model, dataset_name, logger_wandb: WandbLogger = None):
         y = np.arange(ymin * 1.05, ymax * 1.05, delta)
         X, Y = np.meshgrid(x, y)
 
-        Z = torch.exp(
-            model(
-                torch.from_numpy(np.c_[X.flatten(), Y.flatten()])
-                .to(data.device)
-                .float()
-            ).float()
-        ).cpu()
+        Z = torch.exp(model(torch.from_numpy(np.c_[X.flatten(), Y.flatten()]).to(data.device).float()).float()).cpu()
         Z = Z.view(X.shape)
         CS = plt.contourf(X, Y, Z, 100, cmap=plt.cm.viridis)
         plt.colorbar(CS)

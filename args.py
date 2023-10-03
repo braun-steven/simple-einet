@@ -6,7 +6,6 @@ from simple_einet.data import Dist
 
 
 def parse_args():
-
     home = os.getenv("HOME")
     data_dir = os.getenv("DATA_DIR", os.path.join(home, "data"))
     results_dir = os.getenv("RESULTS_DIR", os.path.join(home, "results"))
@@ -52,9 +51,7 @@ def parse_args():
         help="number of bits for each pixel (default: 8)",
     )
 
-    parser.add_argument(
-        "--num-workers", type=int, help="number of data loading workers", default=4
-    )
+    parser.add_argument("--num-workers", type=int, help="number of data loading workers", default=4)
     parser.add_argument(
         "--epochs",
         type=int,
@@ -98,9 +95,7 @@ def parse_args():
         default=False,
         help="quickly check a single pass",
     )
-    parser.add_argument(
-        "--seed", type=int, default=1, metavar="S", help="random seed (default: 1)"
-    )
+    parser.add_argument("--seed", type=int, default=1, metavar="S", help="random seed (default: 1)")
     parser.add_argument(
         "--log-interval",
         type=int,
@@ -127,12 +122,8 @@ def parse_args():
         action="store_true",
         help="Debug flag (less data, fewer iterations)",
     )
-    parser.add_argument(
-        "-S", type=int, default=10, help="Number of output sum nodes in each layer."
-    )
-    parser.add_argument(
-        "-I", type=int, default=10, help="Number of distributions for each RV."
-    )
+    parser.add_argument("-S", type=int, default=10, help="Number of output sum nodes in each layer.")
+    parser.add_argument("-I", type=int, default=10, help="Number of distributions for each RV.")
     parser.add_argument("-D", type=int, default=3)
     parser.add_argument("-R", type=int, default=1)
     parser.add_argument("--gpu", help="GPU device id.")
@@ -146,9 +137,7 @@ def parse_args():
         "training is skipped and model is "
         "evaluated",
     )
-    parser.add_argument(
-        "--layer", choices=["einsum", "linsum"], default="linsum", help="layer type"
-    )
+    parser.add_argument("--layer", choices=["einsum", "linsum"], default="linsum", help="layer type")
     parser.add_argument(
         "--dist",
         type=Dist,
@@ -165,9 +154,7 @@ def parse_args():
     )
     parser.add_argument("--group-tag", type=str, help="tag for group of experiments")
     parser.add_argument("--tag", type=str, help="tag for experiment")
-    parser.add_argument(
-        "--wandb", action="store_true", help="enable wandb online logging"
-    )
+    parser.add_argument("--wandb", action="store_true", help="enable wandb online logging")
     parser.add_argument("--swa", action="store_true", help="use Stochastic Weight Averaging")
 
     parser.add_argument("--profiler", help="", choices=["simple", "pytorch", "advanced"])

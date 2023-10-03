@@ -25,9 +25,7 @@ parser.add_argument(
     metavar="N",
     help="number of epochs to train (default: 14)",
 )
-parser.add_argument(
-    "--lr", type=float, default=1.0, metavar="LR", help="learning rate (default: 1.0)"
-)
+parser.add_argument("--lr", type=float, default=1.0, metavar="LR", help="learning rate (default: 1.0)")
 parser.add_argument("--seed", type=int, default=1, metavar="S", help="random seed (default: 1)")
 parser.add_argument(
     "--log-interval",
@@ -49,7 +47,17 @@ args = parser.parse_args()
 device = torch.device(args.device)
 torch.manual_seed(args.seed)
 
-config = EinetConfig(in_features=4, D=args.D, S=args.K, I=args.K, R=args.R, C=3, leaf_base_class=RatNormal, leaf_base_kwargs={}, dropout=0.0)
+config = EinetConfig(
+    in_features=4,
+    D=args.D,
+    S=args.K,
+    I=args.K,
+    R=args.R,
+    C=3,
+    leaf_base_class=RatNormal,
+    leaf_base_kwargs={},
+    dropout=0.0,
+)
 model = Einet(config).to(device)
 print("Number of parameters:", sum(p.numel() for p in model.parameters() if p.requires_grad))
 
@@ -62,6 +70,7 @@ y_train = torch.tensor(y_train).long().to(device)
 X_test = torch.tensor(X_test).float().to(device)
 y_test = torch.tensor(y_test).long().to(device)
 
+
 def accuracy(model, X, y):
     with torch.no_grad():
         outputs = model(X)
@@ -70,6 +79,7 @@ def accuracy(model, X, y):
         total = y.shape[0]
         acc = correct / total * 100
         return acc
+
 
 cross_entropy = torch.nn.CrossEntropyLoss()
 

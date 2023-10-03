@@ -46,7 +46,6 @@ def make_og_einet(
     num_classes: int,
     num_channels: int,
 ):
-
     graph = Graph.random_binary_trees(num_var=num_var, depth=depth, num_repetitions=num_repetitions)
 
     args = EinsumNetwork.Args(
@@ -124,19 +123,14 @@ def run(
     num_channels,
     results,
 ):
-
-    einet_og = make_og_einet(
-        num_features, depth, num_sums, num_leaves, num_repetitions, num_classes, num_channels
-    )
-    einet_si = make_simple_einet(
-        num_features, depth, num_sums, num_leaves, num_repetitions, num_classes, num_channels
-    )
+    einet_og = make_og_einet(num_features, depth, num_sums, num_leaves, num_repetitions, num_classes, num_channels)
+    einet_si = make_simple_einet(num_features, depth, num_sums, num_leaves, num_repetitions, num_classes, num_channels)
     assert count_params(einet_og) == count_params(einet_si)
 
     x_si = torch.randint(low=0, high=256, size=(batch_size, num_channels, num_features)).to(DEVICE)
     x_og = x_si.clone().permute(0, 2, 1)  # OG impl uses [B, F, C]
 
-    for (name, method) in [("forward", do_forward), ("backward", do_backward)]:
+    for name, method in [("forward", do_forward), ("backward", do_backward)]:
         results.append(
             benchmark.Timer(
                 stmt="f(model, x)",
@@ -159,7 +153,7 @@ def run(
 
 def power_2_range(start=0, end=0):
     for i in range(start, end):
-        yield 2 ** i
+        yield 2**i
 
 
 def main():

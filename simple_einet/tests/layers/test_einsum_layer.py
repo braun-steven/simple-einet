@@ -12,7 +12,6 @@ class TestEinsumLayer(TestCase):
     def setUp(self) -> None:
         self.layer = EinsumLayer(num_features=4, num_sums_in=3, num_sums_out=2, num_repetitions=5)
 
-
     def test_logits_to_log_weights(self):
         for dim in range(self.layer.logits.dim()):
             log_weights = logits_to_log_weights(self.layer.logits, dim=dim)
@@ -29,7 +28,7 @@ class TestEinsumLayer(TestCase):
         )
 
     @parameterized.expand([(False,), (True,)])
-    def test__sample_from_weights(self, differentiable:bool):
+    def test__sample_from_weights(self, differentiable: bool):
         N = 2
         ctx = get_sampling_context(layer=self.layer, num_samples=N, is_differentiable=differentiable)
         log_weights = self.layer._select_weights(ctx, self.layer.logits)
@@ -40,7 +39,7 @@ class TestEinsumLayer(TestCase):
             self.assertEqual(tuple(indices.shape), (N, self.layer.num_features))
 
     @parameterized.expand([(False,), (True,)])
-    def test__select_weights(self, differentiable:bool):
+    def test__select_weights(self, differentiable: bool):
         N = 2
         ctx = get_sampling_context(layer=self.layer, num_samples=N, is_differentiable=differentiable)
         weights = self.layer._select_weights(ctx, self.layer.logits)
@@ -59,4 +58,3 @@ class TestEinsumLayer(TestCase):
         sums = log_weights.logsumexp(dim=2)
         target = torch.zeros_like(sums)
         self.assertTrue(torch.allclose(sums, target, atol=1e-5))
-

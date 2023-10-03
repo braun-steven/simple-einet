@@ -96,8 +96,6 @@ def train(args, model: Union[Einet, EinetMixture], device, train_loader, optimiz
                 break
 
 
-
-
 def test(model, device, loader, tag):
     model.eval()
     test_loss = 0

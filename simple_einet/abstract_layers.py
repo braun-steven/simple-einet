@@ -161,7 +161,6 @@ class AbstractSumLayer(AbstractLayer):
         """Returns the shape of the layer's weights as a tuple of integers."""
         pass
 
-
     @abstractmethod
     def _select_weights(self, context: SamplingContext, logits: torch.Tensor) -> torch.Tensor:
         """

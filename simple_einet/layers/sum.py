@@ -59,7 +59,6 @@ class SumLayer(AbstractSumLayer):
     def weight_shape(self) -> Tuple[int, ...]:
         return self.num_features_out, self.num_sums_in, self.num_sums_out, self.num_repetitions
 
-
     def forward(self, x: torch.Tensor):
         """Forward pass of the layer."""
         # Save input if input cache is enabled

@@ -10,7 +10,7 @@ setup(
     name="simple-einet",
     version="0.0.1",
     author="Steven Lang",
-    packages=find_packages(include=['simple_einet', 'simple_einet.*']),
+    packages=find_packages(include=["simple_einet", "simple_einet.*"]),
     install_requires=required,
     long_description=long_description,
 )

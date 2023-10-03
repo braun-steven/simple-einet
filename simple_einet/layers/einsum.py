@@ -234,7 +234,9 @@ class EinsumLayer(AbstractSumLayer):
         assert logits.shape == (ctx.num_samples, self.num_features_out, self.num_sums_in, self.num_sums_in)
 
         # Project weights into valid space
-        log_weights = logits_to_log_weights(logits.view(*logits.shape[:-2], self.num_sums_in**2), dim=-1, temperature=ctx.temperature_sums)
+        log_weights = logits_to_log_weights(
+            logits.view(*logits.shape[:-2], self.num_sums_in**2), dim=-1, temperature=ctx.temperature_sums
+        )
 
         return log_weights
 
@@ -246,5 +248,3 @@ class EinsumLayer(AbstractSumLayer):
             self.out_shape,
             self.weight_shape(),
         )
-
-
