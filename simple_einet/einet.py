@@ -160,76 +160,6 @@ class Einet(nn.Module):
 
         return x
 
-    def forward_tdi(
-        self, x: torch.Tensor, marginalization_mask: torch.Tensor = None, dropout_inference=None
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Inference pass for the Einet model.
-
-        Args:
-          x (torch.Tensor): Input data of shape [N, C, D], where C is the number of input channels (useful for images) and D is the number of features/random variables (H*W for images).
-          marginalized_scope: torch.Tensor:  (Default value = None)
-
-        Returns:
-            Log-likelihood tensor of the input: p(X) or p(X | C) if number of classes > 1.
-        """
-
-        # Add channel dimension if not present
-        if x.dim() == 2:  # [N, D]
-            x = x.unsqueeze(1)
-
-        if x.dim() == 4:  # [N, C, H, W]
-            x = x.view(x.shape[0], self.config.num_channels, -1)
-
-        assert x.dim() == 3
-        assert x.shape[1] == self.config.num_channels
-
-        # Apply leaf distributions (replace marginalization indicators with 0.0 first)
-        x = self.leaf(x, marginalization_mask)
-
-        # Pass through intermediate layers
-        log_exp, log_var = self._forward_layers_tdi(x, dropout_inference)
-
-        # Merge results from the different repetitions into the channel dimension
-        batch_size, features, channels, repetitions = log_exp.size()
-        assert features == 1  # number of features should be 1 at this point
-        assert channels == self.config.num_classes
-
-        # If model has multiple reptitions, perform repetition mixing
-        if self.config.num_repetitions > 1:
-            # Mix repetitions
-            log_exp, log_var = self.mixing.forward_tdi(log_exp, log_var, dropout_inference=dropout_inference)
-        else:
-            # Remove repetition index
-            log_exp = log_exp.squeeze(-1)
-            log_var = log_var.squeeze(-1)
-
-        # Remove feature dimension
-        log_exp = log_exp.squeeze(1)
-        log_var = log_var.squeeze(1)
-
-        # Final shape check
-        assert log_exp.shape == (batch_size, self.config.num_classes)
-        assert log_var.shape == (batch_size, self.config.num_classes)
-
-        return log_exp, log_var
-
-    def _forward_layers_tdi(self, log_exp, dropout_inference=None):
-        """
-        Forward pass through the inner sum and product layers.
-
-        Args:
-            log_exp: Input expectations.
-
-        Returns:
-            torch.Tensor: Output of the last layer before the root layer.
-        """
-        # Forward to inner product and sum layers
-        log_var = torch.zeros_like(log_exp).log()
-        for layer in self.layers:
-            log_exp, log_var = layer.forward_tdi(log_exp, log_var, dropout_inference)
-        return log_exp, log_var
-
     def _forward_layers(self, x):
         """
         Forward pass through the inner sum and product layers.
@@ -261,28 +191,6 @@ class Einet(nn.Module):
         ll_x_g_y = self(x)  # [N, C]
 
         return posterior(ll_x_g_y, self.config.num_classes)
-
-    def posterior_tdi(self, x, dropout_inference=None) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Compute taylor approximation of the posterior expectation logE[p(y | x)] and logVar[p(y | x)] of the data.
-
-        Args:
-          x: Data input.
-
-        Returns:
-            Posterior expectation logE[p(y | x)] and posterior variance logVar[p(y | x)].
-        """
-
-        assert self.config.num_classes > 1, "Cannot compute posterior without classes."
-
-        # Notation to make things shorter:
-        # - log is implicit, everything is computed in logspace
-        # - e_ -> log_exp; v_ -> log_var; c_ -> log_cov
-
-        # logE[p(x | y)],logVar[p(x | y)]
-        e_x_g_y, v_x_g_y = self.forward_tdi(x, dropout_inference=dropout_inference)  # [N, C]
-
-        return posterior_tdi(e_x_g_y, v_x_g_y, self.config.num_classes)
 
     def _build(self):
         """Construct the internal architecture of the RatSpn."""
@@ -353,7 +261,9 @@ class Einet(nn.Module):
                 num_repetitions=1,
             )
             self._class_sampling_root.weights = nn.Parameter(
-                torch.log(torch.ones(size=(1, self.config.num_classes, 1, 1)) * torch.tensor(1 / self.config.num_classes)),
+                torch.log(
+                    torch.ones(size=(1, self.config.num_classes, 1, 1)) * torch.tensor(1 / self.config.num_classes)
+                ),
                 requires_grad=False,
             )
 
@@ -465,9 +375,7 @@ class Einet(nn.Module):
             )
         else:
             indices_out = torch.zeros(size=(num_samples, 1), dtype=torch.long, device=self._device)
-            indices_repetition = torch.zeros(
-                size=(num_samples,), dtype=torch.long, device=self._device
-            )
+            indices_repetition = torch.zeros(size=(num_samples,), dtype=torch.long, device=self._device)
 
         ctx = SamplingContext(
             num_samples=num_samples,
@@ -748,62 +656,3 @@ def posterior(ll_x_g_y: torch.Tensor, num_classes) -> torch.Tensor:
     ll_x = torch.logsumexp(ll_x_and_y, dim=1, keepdim=True)
     ll_y_g_x = ll_x_g_y + ll_y - ll_x
     return ll_y_g_x
-
-
-def posterior_tdi(e_x_g_y, v_x_g_y, num_classes) -> Tuple[torch.Tensor, torch.Tensor]:
-    """
-    Compute taylor approximation of the posterior expectation logE[p(y | x)] and logVar[p(y | x)] of the data.
-
-    Args:
-        x: Data input.
-
-    Returns:
-        Posterior expectation logE[p(y | x)] and posterior variance logVar[p(y | x)].
-    """
-
-    # Notation to make things shorter:
-    # - log is implicit, everything is computed in logspace
-    # - e_ -> log_exp; v_ -> log_var; c_ -> log_cov
-
-    # log prior
-    prior = np.log(1 / num_classes)
-
-    # log(E[A])
-    e_a = e_x_g_y + prior
-
-    # log(E[B])
-    e_b = torch.logsumexp(e_x_g_y + prior, dim=-1).unsqueeze(1)
-
-    # log(Var[A])
-    v_a = v_x_g_y + 2 * prior
-
-    # Covariance matrix between root nodes
-    # Use upper bound approximation Cov[i, j] < sqrt(Var[i] * Var[j])
-    # covs = 1/2 * (v_a.unsqueeze(1) + v_a.unsqueeze(2))
-
-    # log(Var[B])
-    # v_b = torch.logsumexp(covs + 2 * prior, dim=(1, 2)).unsqueeze(1)
-    v_b = torch.logsumexp(v_x_g_y + 2 * prior, dim=-1).unsqueeze(1)
-
-    # log(Cov[A, B])  | Crude approximation, ignoring actual covariances
-    c_a_b = v_a
-    # c_a_b = prior + torch.logsumexp(covs + prior, dim=2)
-
-    # log(E[A / B]) = term1 - term2 + term3
-    e_a_div_b_1 = e_a - e_b  # E[A] / E[B]
-    e_a_div_b_2 = c_a_b - e_b * 2  # Cov[A, B] / E[B]^2
-    e_a_div_b_3 = v_b + e_a - 3 * e_b  # Var[B] * E[A] / E[B]^3
-    e_a_div_b = logsumexp((e_a_div_b_1, e_a_div_b_2, e_a_div_b_3), mask=[1, -1, 1])
-    # mask 1 1 1 since cov is negative and the second (-1) in the original mask is negated again, resulting in a positive second term
-    # e_a_div_b = logsumexp((e_a_div_b_1, e_a_div_b_2, e_a_div_b_3), mask=[1, 1, 1])
-
-    # log(Var[A / B]) = left * (term1 - term2 + term3)
-    v_a_div_b_left = 2 * e_a - 2 * e_b
-    v_a_div_b_1 = v_a - e_a * 2
-    v_a_div_b_2 = c_a_b - (e_a + e_b) + np.log(2)
-    v_a_div_b_3 = (v_b - e_b * 2).expand(v_a_div_b_2.shape)
-    v_a_div_b = v_a_div_b_left + logsumexp((v_a_div_b_1, v_a_div_b_2, v_a_div_b_3), mask=[1, -1, 1])
-    # mask 1 1 1 since cov is negative and the second (-1) in the original mask is negated again, resulting in a positive second term
-    # v_a_div_b = v_a_div_b_left + logsumexp((e_a_div_b_1, e_a_div_b_2, e_a_div_b_3), mask=[1, 1, 1])
-
-    return e_a_div_b, v_a_div_b

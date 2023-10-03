@@ -63,36 +63,6 @@ class MixingLayer(AbstractSumLayer):
 
         return lls
 
-    def forward_tdi(self, log_exp_ch: Tensor, log_var_ch: Tensor, dropout_inference=None) -> Tuple[Tensor, Tensor]:
-        # Save input if input cache is enabled
-        if self._is_input_cache_enabled:
-            self._input_cache["in"] = log_exp_ch.clone()
-
-        # Get log weights
-        log_weights = self._get_normalized_log_weights().unsqueeze(0)
-
-        # Prepare constants
-        # If dropout at inference time is set, use this instead
-        if dropout_inference is not None:
-            log_q = np.log(1 - dropout_inference)
-            log_p = np.log(dropout_inference)
-        else:
-            log_q = torch.log(1 - self.dropout)
-            log_p = torch.log(self.dropout)
-
-        # Expectation
-        log_exp = log_q + torch.logsumexp(log_exp_ch + log_weights, dim=3)
-
-        # Variance
-        log_weights_sq = log_weights * 2
-        log_exp_ch_sq = log_exp_ch * 2
-        log_var_ch = log_var_ch
-
-        log_var_plus_exp = torch.logsumexp(torch.stack((log_var_ch, log_exp_ch_sq + log_p), dim=-1), dim=-1)
-        log_var = log_q + torch.logsumexp(log_weights_sq + log_var_plus_exp, dim=3)
-
-        return log_exp, log_var
-
     def _sample_from_weights(self, ctx: SamplingContext, log_weights: Tensor):
         if ctx.is_differentiable:
             indices = sample_categorical_differentiably(
