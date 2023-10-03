@@ -5,7 +5,7 @@ import pickle
 from itertools import product
 import torch.utils.benchmark as benchmark
 from torch.utils.benchmark.utils.common import TaskSpec
-from simple_einet.distributions import Binomial
+from simple_einet.layers.distributions import Binomial
 from simple_einet.einet import Einet, EinetConfig
 import os
 import sys

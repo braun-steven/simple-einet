@@ -1,19 +1,17 @@
-from torch import distributions as dist, nn
-import numpy as np
-import torchvision.models as models
-from simple_einet.sampling_utils import SamplingContext
 from typing import List, Tuple, Union
-import torch
-from torch import nn
-from simple_einet.type_checks import check_valid
 
-from simple_einet.distributions.abstract_leaf import (
+import numpy as np
+import torch
+from torch import distributions as dist
+from torch import nn
+
+from simple_einet.layers.distributions.abstract_leaf import (
     AbstractLeaf,
     dist_forward,
     dist_mode,
-    dist_sample,
 )
-from torch.nn import functional as F
+from simple_einet.sampling_utils import SamplingContext
+from simple_einet.type_checks import check_valid
 
 
 class Binomial(AbstractLeaf):
@@ -46,18 +44,19 @@ class Binomial(AbstractLeaf):
 
         self.total_count = check_valid(total_count, int, lower_bound=1)
 
-        # Create binomial parameters
-        self.probs = nn.Parameter(torch.randn(1, num_channels, num_features, num_leaves, num_repetitions))
+        # Create binomial parameters as unnormalized log probabilities
+        self.logits = nn.Parameter(torch.randn(1, num_channels, num_features, num_leaves, num_repetitions))
 
-    def _get_base_distribution(self, context: SamplingContext = None):
+    def _get_base_distribution(self, ctx: SamplingContext = None):
         # Use sigmoid to ensure, that probs are in valid range
-        if context is not None and context.is_differentiable:
-            return CustomBinomial(probs=self.probs.sigmoid(), total_count=self.total_count)
+        probs = self.logits.sigmoid()
+        if ctx is not None and ctx.is_differentiable:
+            return DifferentiableBinomial(probs=probs, total_count=self.total_count)
         else:
-            return dist.Binomial(probs=self.probs.sigmoid(), total_count=self.total_count)
+            return dist.Binomial(probs=probs, total_count=self.total_count)
 
 
-class CustomBinomial:
+class DifferentiableBinomial:
     """
     A custom implementation of the Binomial distribution, with differentiable sampling.
 
@@ -76,7 +75,24 @@ class CustomBinomial:
 
     def sample(self, sample_shape: Tuple[int]):
         """
-        Draws samples from the distribution using a normal distribution as approximation.
+        Draws samples from the distribution using a gaussian differentiable approximation.
+
+
+        # NOTE: The following would be the correct differentiable approximation using gumbel/simple trick
+        # but since total_count can be quite large we use the normal approximation instead which doesn't need
+        # to sample `total_count` times.
+        # ```
+        # p = self.probs
+        # log_p = p.log()
+        # log_1_p = (1 - p).log()
+        # log_p = log_p.unsqueeze(-1).expand([*log_p.size(), self.total_count])
+        # log_1_p = log_1_p.unsqueeze(-1).expand([*log_1_p.size(), self.total_count])
+        # logits = torch.stack([log_1_p, log_p], dim=-1)
+        # logits = logits.expand([*sample_shape, *logits.size()])
+        # samples = SIMPLE(logits, dim=-1)
+        # samples = (samples * torch.arange(0, 2).float()).sum([-2, -1])
+        # return samples
+        # ```
 
         Args:
             sample_shape (Tuple[int]): The shape of the desired sample.
@@ -84,15 +100,13 @@ class CustomBinomial:
         Returns:
             torch.Tensor: A tensor of shape (sample_shape[0], batch_size), containing the drawn samples.
         """
-        # Normal approximation to be differentiable
         mu = self.total_count * self.probs
-        sigma = mu * (1 - self.probs)
-
-        num_samples = sample_shape[0]
-        eps = torch.randn((num_samples,) + mu.shape, dtype=mu.dtype, device=mu.device)
-        samples = mu.unsqueeze(0) + sigma.unsqueeze(0) * eps
-        samples = samples.clip(0, self.total_count)
+        sigma = torch.sqrt(self.total_count * self.probs * (1 - self.probs))
+        epsilon = torch.randn(sample_shape + mu.shape, device=mu.device)
+        samples = mu + sigma * epsilon
+        samples.clip_(min=0, max=self.total_count)
         return samples
+
 
     def log_prob(self, x):
         """
@@ -218,45 +232,36 @@ class ConditionalBinomial(AbstractLeaf):
 
         return x
 
-    def sample(self, num_samples: int = None, context: SamplingContext = None) -> torch.Tensor:
+    def sample(self, ctx: SamplingContext) -> torch.Tensor:
         """
         Samples from the ConditionalBinomial distribution.
 
         Args:
-            num_samples (int): The number of samples to generate.
-            context (SamplingContext): The sampling context.
+            ctx (SamplingContext): The sampling context.
 
         Returns:
             The generated samples.
         """
-        ev = context.evidence
+        ev = ctx.evidence
         x_cond = ev[:, :, self.cond_idxs, None, None]
         d = self.get_conditioned_distribution(x_cond)
 
         # Sample from the specified distribution
-        if context.is_mpe:
-            samples = dist_mode(d, context)
+        if ctx.is_mpe:
+            samples = dist_mode(d, ctx)
         else:
             samples = d.sample()
 
-        (
-            num_samples,
-            num_channels,
-            num_features,
-            num_leaves,
-            num_repetitions,
-        ) = samples.shape
-
         # Index samples to get the correct repetitions
-        r_idxs = context.indices_repetition.view(-1, 1, 1, 1, 1)
-        r_idxs = r_idxs.expand(-1, num_channels, num_features, num_leaves, -1)
+        r_idxs = ctx.indices_repetition.view(-1, 1, 1, 1, 1)
+        r_idxs = r_idxs.expand(-1, self.num_channels, self.num_features, self.num_leaves, -1)
         samples = samples.gather(dim=-1, index=r_idxs)
         samples = samples.squeeze(-1)
 
         # If parent index into out_channels are given
-        if context.indices_out is not None:
+        if ctx.indices_out is not None:
             # Choose only specific samples for each feature/scope
-            samples = torch.gather(samples, dim=2, index=context.indices_out.unsqueeze(-1)).squeeze(-1)
+            samples = torch.gather(samples, dim=2, index=ctx.indices_out.unsqueeze(-1)).squeeze(-1)
 
         return samples
 

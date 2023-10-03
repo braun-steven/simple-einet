@@ -17,6 +17,12 @@ def parse_args():
         required=True,
         help="Dataset to use for training.",
     )
+    # Flag if model should be trained
+    parser.add_argument(
+        "--train",
+        action="store_true",
+        help="Flag if model should be trained.",
+    )
     parser.add_argument("--data-dir", default=data_dir, help="path to dataset")
     parser.add_argument("--results-dir", default=results_dir, help="path to results")
     parser.add_argument(
@@ -141,7 +147,7 @@ def parse_args():
         "evaluated",
     )
     parser.add_argument(
-        "--cp", action="store_true", help="Use crossproduct in einsum layer"
+        "--layer", choices=["einsum", "linsum"], default="linsum", help="layer type"
     )
     parser.add_argument(
         "--dist",
@@ -167,6 +173,7 @@ def parse_args():
     parser.add_argument("--profiler", help="", choices=["simple", "pytorch", "advanced"])
 
     parser.add_argument("--log-weights", action="store_true", help="use log weights")
+    parser.add_argument("--num-devices", type=int, default=1, help="number of devices")
 
     # Parse args
     args = parser.parse_args()

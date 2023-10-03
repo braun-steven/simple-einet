@@ -1,12 +1,13 @@
 import torch
-from simple_einet.distributions.abstract_leaf import AbstractLeaf
 from torch import distributions as dist
 from torch import nn
+
+from simple_einet.layers.distributions.abstract_leaf import AbstractLeaf
 
 
 class Bernoulli(AbstractLeaf):
     """Bernoulli layer. Maps each input feature to its bernoulli log likelihood.
-    
+
     Probabilities are modeled as unconstrained parameters and are transformed via a sigmoid function into [0, 1] when needed.
     """
 

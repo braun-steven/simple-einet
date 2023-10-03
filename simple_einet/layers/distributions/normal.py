@@ -1,11 +1,10 @@
 from typing import Tuple
 
 import torch
-from simple_einet.distributions.abstract_leaf import AbstractLeaf
-from simple_einet.type_checks import check_valid
 from torch import distributions as dist
 from torch import nn
 
+from simple_einet.layers.distributions.abstract_leaf import AbstractLeaf
 from simple_einet.sampling_utils import SamplingContext
 
 
@@ -34,7 +33,7 @@ class Normal(AbstractLeaf):
         self.means = nn.Parameter(torch.randn(1, num_channels, num_features, num_leaves, num_repetitions))
         self.log_stds = nn.Parameter(torch.rand(1, num_channels, num_features, num_leaves, num_repetitions))
 
-    def _get_base_distribution(self, context: SamplingContext = None):
+    def _get_base_distribution(self, ctx: SamplingContext = None):
         return dist.Normal(loc=self.means, scale=self.log_stds.exp())
 
 
@@ -71,7 +70,8 @@ class RatNormal(AbstractLeaf):
             min_mean (float, optional): The minimum value for the mean. Defaults to None.
             max_mean (float, optional): The maximum value for the mean. Defaults to None.
         """
-    def _get_base_distribution(self, context: SamplingContext = None) -> "CustomNormal":
+
+    def _get_base_distribution(self, ctx: SamplingContext = None) -> "CustomNormal":
         if self.min_sigma < self.max_sigma:
             sigma_ratio = torch.sigmoid(self.stds)
             sigma = self.min_sigma + (self.max_sigma - self.min_sigma) * sigma_ratio
@@ -101,24 +101,25 @@ class CustomNormal:
         mu (torch.Tensor): The mean of the Normal distribution.
         sigma (torch.Tensor): The standard deviation of the Normal distribution.
     """
+
     def __init__(self, mu: torch.Tensor, sigma: torch.Tensor):
         self.mu = mu
         self.sigma = sigma
 
     def sample(self, sample_shape: Tuple[int]):
-            """
-            Generates random samples from the normal distribution with mean `mu` and standard deviation `sigma`.
+        """
+        Generates random samples from the normal distribution with mean `mu` and standard deviation `sigma`.
 
-            Args:
-                sample_shape (Tuple[int]): The shape of the desired output tensor.
+        Args:
+            sample_shape (Tuple[int]): The shape of the desired output tensor.
 
-            Returns:
-                samples (torch.Tensor): A tensor of shape `sample_shape` containing random samples from the normal distribution.
-            """
-            num_samples = sample_shape[0]
-            eps = torch.randn((num_samples,) + self.mu.shape, dtype=self.mu.dtype, device=self.mu.device)
-            samples = self.mu.unsqueeze(0) + self.sigma.unsqueeze(0) * eps
-            return samples
+        Returns:
+            samples (torch.Tensor): A tensor of shape `sample_shape` containing random samples from the normal distribution.
+        """
+        num_samples = sample_shape[0]
+        eps = torch.randn((num_samples,) + self.mu.shape, dtype=self.mu.dtype, device=self.mu.device)
+        samples = self.mu.unsqueeze(0) + self.sigma.unsqueeze(0) * eps
+        return samples
 
     def log_prob(self, x):
         """

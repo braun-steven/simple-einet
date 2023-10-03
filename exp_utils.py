@@ -422,11 +422,6 @@ def reduce_bits(image: torch.Tensor, n_bits: int) -> torch.Tensor:
     return image
 
 
-def xor(a: bool, b: bool) -> bool:
-    """Perform the XOR operation between a and b."""
-    return (a and not b) or (not a and b)
-
-
 def loss_dict_to_str(running_loss_dict: Dict[str, float], logging_period: int) -> str:
     """
     Create a joined string from a dictionary mapping str->float.

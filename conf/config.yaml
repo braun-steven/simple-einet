@@ -40,11 +40,10 @@ S: 10
 I: 10
 D: 3
 R: 1
-K: -1
 gpu: 0
 epochs: 10
 load_and_eval: False
-cp: False
+layer_type: "linsum"
 dist: "normal"
 precision: "bf16-mixed"
 group_tag: ???
@@ -52,7 +51,6 @@ tag: ???
 wandb: False
 swa: False
 profiler: ???
-log_weights: False
 dataset: ???
 num_classes: 10
 init_leaf_data: False

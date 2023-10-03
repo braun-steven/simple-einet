@@ -1,9 +1,5 @@
 import itertools
-import logging
-import random
 import os
-import math
-import logging
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, Tuple
@@ -13,13 +9,23 @@ import torch
 import torchvision.transforms as transforms
 from sklearn import datasets
 from torch.utils.data import DataLoader, Dataset, random_split, ConcatDataset
-from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data.sampler import Sampler
-from torchvision.datasets import CIFAR10, MNIST, SVHN, CelebA, FakeData, FashionMNIST, LSUN, Flowers102, ImageFolder, LFWPeople
+from torchvision.datasets import (
+    CIFAR10,
+    MNIST,
+    SVHN,
+    CelebA,
+    FakeData,
+    FashionMNIST,
+    LSUN,
+    Flowers102,
+    ImageFolder,
+    LFWPeople,
+)
 
-from simple_einet.distributions import RatNormal
-from simple_einet.distributions.binomial import Binomial
-from simple_einet.distributions.normal import Normal
+from simple_einet.layers.distributions.binomial import Binomial
+from simple_einet.layers.distributions.categorical import Categorical
+from simple_einet.layers.distributions.normal import Normal, RatNormal
 
 
 @dataclass
@@ -216,7 +222,7 @@ def get_datasets(dataset_name, data_dir, normalize: bool) -> Tuple[Dataset, Data
         #     mask = torch.zeros_like(dataset.targets).bool()
         #     for digit in digits:
         #         mask = mask | (dataset.targets == digit)
-
+        #
         #     dataset.data = dataset.data[mask]
         #     dataset.targets = dataset.targets[mask]
 
@@ -281,7 +287,6 @@ def get_datasets(dataset_name, data_dir, normalize: bool) -> Tuple[Dataset, Data
             dataset_extra = SVHN(**kwargs, split="extra")
             dataset_train = ConcatDataset([dataset_train, dataset_extra])
 
-
     elif dataset_name == "lsun":
         if normalize:
             transform.transforms.append(transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]))
@@ -305,7 +310,6 @@ def get_datasets(dataset_name, data_dir, normalize: bool) -> Tuple[Dataset, Data
         dataset_test = FakeData(size=3000, image_size=shape, num_classes=10, transform=transform)
 
     elif dataset_name == "flowers":
-
         if normalize:
             transform.transforms.append(transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]))
 
@@ -315,7 +319,6 @@ def get_datasets(dataset_name, data_dir, normalize: bool) -> Tuple[Dataset, Data
         dataset_test = Flowers102(**kwargs, split="test")
 
     elif dataset_name == "tiny-imagenet":
-
         if normalize:
             transform.transforms.append(transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]))
 
@@ -325,7 +328,6 @@ def get_datasets(dataset_name, data_dir, normalize: bool) -> Tuple[Dataset, Data
         dataset_test = ImageFolder(root=os.path.join(data_dir, "tiny-imagenet-200", "test"), transform=transform)
 
     elif dataset_name == "lfw":
-
         if normalize:
             transform.transforms.append(transforms.Normalize([0.5], [0.5]))
 
@@ -340,14 +342,15 @@ def get_datasets(dataset_name, data_dir, normalize: bool) -> Tuple[Dataset, Data
 
         dataset_train, dataset_val = random_split(dataset_train, lengths=lenghts, generator=split_generator)
 
-
     else:
         raise Exception(f"Unknown dataset: {dataset_name}")
 
     return dataset_train, dataset_val, dataset_test
 
 
-def build_dataloader(dataset_name, data_dir, batch_size, num_workers, loop: bool, normalize: bool) -> Tuple[DataLoader, DataLoader, DataLoader]:
+def build_dataloader(
+    dataset_name, data_dir, batch_size, num_workers, loop: bool, normalize: bool
+) -> Tuple[DataLoader, DataLoader, DataLoader]:
     # Get dataset objects
     dataset_train, dataset_val, dataset_test = get_datasets(dataset_name, data_dir, normalize=normalize)
 
@@ -429,6 +432,7 @@ class Dist(str, Enum):
     NORMAL = "normal"
     NORMAL_RAT = "normal_rat"
     BINOMIAL = "binomial"
+    CATEGORICAL = "categorical"
 
 
 def get_distribution(dist, min_sigma, max_sigma):
@@ -454,6 +458,9 @@ def get_distribution(dist, min_sigma, max_sigma):
     elif dist == Dist.BINOMIAL:
         leaf_type = Binomial
         leaf_kwargs = {"total_count": 2**8 - 1}
+    elif dist == Dist.CATEGORICAL:
+        leaf_type = Categorical
+        leaf_kwargs = {"num_bins": 2**8 - 1}
     else:
         raise ValueError("dist must be either normal or binomial")
     return leaf_kwargs, leaf_type

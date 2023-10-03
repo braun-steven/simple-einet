@@ -1,11 +1,12 @@
 from typing import Any, Dict, Iterable, List, Tuple
 
 import torch
-from simple_einet.distributions.abstract_leaf import AbstractLeaf
-from simple_einet.utils import invert_permutation
-from simple_einet.sampling_utils import SamplingContext
 from torch import distributions as dist
 from torch import nn
+
+from simple_einet.layers.distributions.abstract_leaf import AbstractLeaf
+from simple_einet.sampling_utils import SamplingContext
+from simple_einet.utils import invert_permutation
 
 
 class MultiDistributionLayer(AbstractLeaf):
@@ -36,14 +37,14 @@ class MultiDistributionLayer(AbstractLeaf):
 
         # Check that the index list covers all features
         all_scopes = []
-        for (scopes, _, _) in scopes_to_dist:
+        for scopes, _, _ in scopes_to_dist:
             for scope in scopes:
                 all_scopes.append(scope)
 
         assert len(all_scopes) == num_features
         scope_list = []
         dists = []
-        for (scopes, dist_class, dist_kwargs) in scopes_to_dist:
+        for scopes, dist_class, dist_kwargs in scopes_to_dist:
             # Construct distribution object
             dist = dist_class(
                 num_features=len(scopes),
@@ -67,12 +68,11 @@ class MultiDistributionLayer(AbstractLeaf):
         self.needs_inversion = all_scopes != list(sorted(all_scopes))
 
     def forward(self, x, marginalized_scopes: List[int] = None):
-
         # Collect lls from all distributions
         lls_all = []
 
         # Forward through all base distributions
-        for (scope, dist) in zip(self.scopes, self.dists):
+        for scope, dist in zip(self.scopes, self.dists):
             x_d = x[:, :, scope]
             lls = dist(x_d, marginalized_scopes=None)
             lls_all.append(lls)
@@ -89,11 +89,10 @@ class MultiDistributionLayer(AbstractLeaf):
 
         return lls
 
-    def sample(self, num_samples: int = None, context: SamplingContext = None) -> torch.Tensor:
-
+    def sample(self, ctx: SamplingContext) -> torch.Tensor:
         all_samples = []
-        for (scope, dist) in zip(self.scopes, self.dists):
-            samples = dist.sample(num_samples, context)
+        for scope, dist in zip(self.scopes, self.dists):
+            samples = dist.sample(ctx)
             all_samples.append(samples)
 
         samples = torch.cat(all_samples, dim=2)

@@ -6,7 +6,7 @@ from sklearn import datasets
 from sklearn.model_selection import train_test_split
 import torch
 
-from simple_einet.distributions import RatNormal
+from simple_einet.layers.distributions import RatNormal
 from simple_einet.einet import Einet, EinetConfig
 
 

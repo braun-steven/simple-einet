@@ -1,32 +1,36 @@
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from enum import Enum
+from operator import xor
 
 import torch
 from torch import nn
 from torch.nn import functional as F
 from tqdm import tqdm
 
-import simple_einet
-
 from simple_einet.utils import __HAS_EINSUM_BROADCASTING
 
 
 @contextmanager
-def provide_evidence(
+def sampling_context(
     spn: nn.Module,
     evidence: torch.Tensor = None,
     marginalized_scopes: torch.Tensor = None,
     requires_grad=False,
+    seed=None,
 ):
     """
-    Context manager for sampling with evidence. In this context, the SPN graph is reweighted with the likelihoods
-    computed using the given evidence.
+    Context manager for sampling.
+
+    If evidence is provdied, the SPN graph is reweighted with the likelihoods computed using the given evidence.
 
     Args:
         spn: SPN that is being used to perform the sampling.
         evidence: Provided evidence. The SPN will perform a forward pass prior to entering this contex.
         requires_grad: If False, runs in torch.no_grad() context. (default: False)
+        marginalized_scopes: Scopes to marginalize. (default: None)
+        seed: Seed to use for sampling. (default: None)
+
     """
     # If no gradients are required, run in no_grad context
     if not requires_grad:
@@ -34,6 +38,12 @@ def provide_evidence(
     else:
         # Else provide null context
         context = nullcontext
+
+    if seed is not None:
+        cpu_rng_state = torch.get_rng_state()
+        cuda_rng_state = torch.cuda.get_rng_state() if torch.cuda.is_available() else None
+
+        torch.manual_seed(seed)
 
     # Run forward pass in given context
     with context():
@@ -53,6 +63,11 @@ def provide_evidence(
             for module in spn.modules():
                 if hasattr(module, "_enable_input_cache"):
                     module._disable_input_cache()
+
+    if seed is not None:
+        torch.set_rng_state(cpu_rng_state)
+        if cuda_rng_state is not None:
+            torch.cuda.set_rng_state(cuda_rng_state)
 
 
 @dataclass
@@ -101,10 +116,6 @@ class SamplingContext:
         else:
             raise AttributeError(f"SamplingContext object has no attribute {key}")
 
-    @property
-    def is_root(self):
-        return self.indices_out == None and self.indices_repetition == None
-
 
 def get_context(differentiable):
     """
@@ -146,22 +157,37 @@ def sample_gumbel(shape, eps=1e-20, device="cpu"):
     return g
 
 
-def SIMPLE(logits, dim: int) -> torch.Tensor:
+def SIMPLE(logits=None, log_weights=None, dim=-1, is_mpe=False) -> torch.Tensor:
     """
     Sample from the distribution using SIMPLE[1].
+
+    Takes either logits (unnormalized log probabilities) or log weights (normalized log probabilities) as input.
 
     [1] https://github.com/UCLA-StarAI/SIMPLE, https://arxiv.org/abs/2210.01941
 
     Args:
-        logits (torch.Tensor): Input tensor of shape [*, n_class].
+        logits (torch.Tensor): Input logits (unnormalized log probabilities) of shape [*, n_class].
+        log_weights (torch.Tensor): Input log weights (normalized log probabilities) of shape [*, n_class].
         dim (int): Dimension along which to sample.
+        is_mpe (bool): Whether to perform MPE sampling.
 
     Returns:
-        torch.Tensor: Output tensor of shape [*, n_class], an one-hot vector.
+        torch.Tensor: Output tensor of shape [*, n_class], a one-hot vector.
     """
-    y = F.softmax(logits, dim=dim)
-    y = logits + sample_gumbel(logits.size(), device=logits.device)
-    y_perturbed = F.softmax(y, dim=dim)
+    assert xor(logits is not None, log_weights is not None), "Either logits or log_weights must be given."
+
+    if logits is not None:
+        y = F.softmax(logits, dim=dim)
+        base = logits
+    else:
+        y = log_weights.exp()
+        base = log_weights
+
+    # Add gumbel noise for proper sampling, else do mpe
+    if not is_mpe:
+        base = base + sample_gumbel(base.size(), device=base.device)
+
+    y_perturbed = F.softmax(base, dim=dim)
 
     shape = y.size()
     index = y_perturbed.max(dim=dim, keepdim=True)[1]
@@ -172,46 +198,45 @@ def SIMPLE(logits, dim: int) -> torch.Tensor:
 
 
 def sample_categorical_differentiably(
-    logits: torch.Tensor,
     dim: int,
     is_mpe: bool,
     hard: bool,
     tau: float,
+    logits: torch.Tensor = None,
+    log_weights: torch.Tensor = None,
     method=DiffSampleMethod.SIMPLE,
 ) -> torch.Tensor:
     """
     Perform differentiable sampling/mpe on the given input along a specific dimension.
 
+    Either logits (unnormalized log probabilities) or log weights (normalized log probabilities) must be given.
+
     Args:
-      logits(torch.Tensor): Logits from which the sampling should be done.
       dim(int): Dimension along which to sample from.
       is_mpe(bool): Whether to perform MPE sampling.
       hard(bool): Whether to perform hard or soft sampling.
       tau(float): Temperature for soft sampling.
+      logits(torch.Tensor): Logits (unnormalized log probabilities) from which the sampling should be done.
+      log_weights(torch.Tensor): Log weights (normalized log probabilities) from which the sampling should be done.
       method(DiffSampleMethod): Method to use for differentiable sampling. Must be either DiffSampleMethod.SIMPLE or DiffSampleMethod.GUMBEL.
 
     Returns:
       torch.Tensor: Indices encoded as one-hot tensor along the given dimension `dim`.
     """
-    if not is_mpe:
-        if method == DiffSampleMethod.SIMPLE:
-            return SIMPLE(logits, dim=dim)
-        elif method == DiffSampleMethod.GUMBEL:
-            return F.gumbel_softmax(logits=logits, hard=hard, tau=tau, dim=dim)
-        else:
-            raise Exception(f"Invalid method option (got {method}). Must be either 'SIMPLE' or 'GUMBEL'.")
+    assert xor(logits is not None, log_weights is not None), "Either logits or log_weights must be given."
+
+    if method == DiffSampleMethod.SIMPLE:
+        return SIMPLE(logits=logits, log_weights=log_weights, dim=dim, is_mpe=is_mpe)
+
+    if is_mpe:
+        logits = logits if log_weights is None else log_weights
+        # Differentiable argmax (see gumbel softmax trick code in pytorch)
+        y_soft = logits.softmax(dim)
+        index = y_soft.max(dim, keepdim=True)[1]
+        y_hard = torch.zeros_like(logits, memory_format=torch.legacy_contiguous_format).scatter_(dim, index, 1.0)
+        return y_hard - y_soft.detach() + y_soft
     else:
-        if method == DiffSampleMethod.SIMPLE:
-            return SIMPLE(logits, dim=dim)
-        elif method == DiffSampleMethod.GUMBEL:
-            # Differentiable argmax (see gumbel softmax trick code in pytorch)
-            y_soft = logits.softmax(dim)
-            index = y_soft.max(dim, keepdim=True)[1]
-            y_hard = torch.zeros_like(logits, memory_format=torch.legacy_contiguous_format).scatter_(dim, index, 1.0)
-            ret = y_hard - y_soft.detach() + y_soft
-            return ret
-        else:
-            raise Exception(f"Invalid method option (got {method}). Must be either 'SIMPLE' or 'GUMBEL'.")
+        return F.gumbel_softmax(logits=logits if log_weights is None else log_weights, hard=hard, tau=tau, dim=dim)
 
 
 def index_one_hot(tensor: torch.Tensor, index: torch.Tensor, dim: int) -> torch.Tensor:
@@ -291,7 +316,7 @@ def init_einet_stats(einet: "Einet", dataloader: torch.utils.data.DataLoader):
     stats_mean /= len(dataloader)
     stats_std /= len(dataloader)
 
-    from simple_einet.distributions.normal import Normal
+    from simple_einet.layers.distributions.normal import Normal
     from simple_einet.einet import Einet, EinetMixture
 
     # Set leaf parameters for normal distribution

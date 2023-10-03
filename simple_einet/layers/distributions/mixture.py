@@ -1,18 +1,11 @@
-import logging
-from abc import ABC, abstractmethod
-from typing import Iterable, List, Tuple, Any, Dict
+from typing import List
 
-import numpy as np
 import torch
-from torch import distributions as dist
 from torch import nn
-from torch.nn import functional as F
 
-from simple_einet.utils import invert_permutation
+from simple_einet.layers.distributions.abstract_leaf import AbstractLeaf
+from simple_einet.layers.sum import SumLayer
 from simple_einet.sampling_utils import SamplingContext
-from simple_einet.layers import AbstractLayer, Sum
-from simple_einet.type_checks import check_valid
-from simple_einet.distributions.abstract_leaf import AbstractLeaf, dist_mode
 
 
 class Mixture(AbstractLeaf):
@@ -40,7 +33,7 @@ class Mixture(AbstractLeaf):
         self.representations = nn.ModuleList(reprs)
 
         # Build sum layer as mixture of distributions
-        self.sumlayer = Sum(
+        self.sumlayer = SumLayer(
             num_features=num_features,
             num_sums_in=len(distributions) * out_channels,
             num_sums_out=out_channels,
@@ -70,32 +63,31 @@ class Mixture(AbstractLeaf):
         x = self.sumlayer(x)
         return x
 
-    def sample(self, num_samples: int = None, context: SamplingContext = None) -> torch.Tensor:
+    def sample(self, ctx: SamplingContext) -> torch.Tensor:
         """
         Sample from the Mixture layer.
 
         Args:
-            num_samples: Number of samples to generate.
-            context: Sampling context.
+            ctx: Sampling context.
 
         Returns:
             Sampled tensor.
         """
         # Sample from sum mixture layer
-        context = self.sumlayer.sample(context=context)
+        ctx = self.sumlayer.sample(ctx=ctx)
 
         # Collect samples from different distribution layers
         samples = []
         for d in self.representations:
-            sample_d = d.sample(context=context)
+            sample_d = d.sample(ctx=ctx)
             samples.append(sample_d)
 
         # Stack along channel dimension
         samples = torch.cat(samples, dim=2)
 
         # If parent index into out_channels are given
-        if context.indices_out is not None:
+        if ctx.indices_out is not None:
             # Choose only specific samples for each feature/scope
-            samples = torch.gather(samples, dim=2, index=context.indices_out.unsqueeze(-1)).squeeze(-1)
+            samples = torch.gather(samples, dim=2, index=ctx.indices_out.unsqueeze(-1)).squeeze(-1)
 
         return samples

@@ -149,7 +149,6 @@ def rdc(x, y, f=np.sin, k=20, s=1 / 6.0, n=1):
     lb = 1
     ub = k
     while True:
-
         # Compute canonical correlations
         Cxx = C[:k, :k]
         Cyy = C[k0 : k0 + k, k0 : k0 + k]
@@ -172,6 +171,3 @@ def rdc(x, y, f=np.sin, k=20, s=1 / 6.0, n=1):
             k = (ub + lb) // 2
 
     return np.sqrt(np.max(eigs))
-
-
-

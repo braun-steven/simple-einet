@@ -2,12 +2,13 @@ from typing import List
 
 import numpy as np
 import torch
-from simple_einet.distributions.abstract_leaf import AbstractLeaf, dist_mode
-from simple_einet.type_checks import check_valid
-from simple_einet.sampling_utils import SamplingContext
 from torch import distributions as dist
 from torch import nn
 from torch.nn import functional as F
+
+from simple_einet.layers.distributions.abstract_leaf import AbstractLeaf, dist_mode
+from simple_einet.sampling_utils import SamplingContext
+from simple_einet.type_checks import check_valid
 
 
 class MultivariateNormal(AbstractLeaf):
@@ -101,17 +102,17 @@ class MultivariateNormal(AbstractLeaf):
 
         return x
 
-    def sample(self, num_samples: int = None, context: SamplingContext = None) -> torch.Tensor:
+    def sample(self, ctx: SamplingContext = None) -> torch.Tensor:
         mv = self._get_base_distribution()
 
         # Sample from the specified distribution
-        if context.is_mpe:
-            samples = dist_mode(mv, context)
+        if ctx.is_mpe:
+            samples = dist_mode(mv, ctx)
         else:
-            samples = mv.sample(sample_shape=(context.num_samples,))
+            samples = mv.sample(sample_shape=(ctx.num_samples,))
 
             samples = samples.view(
-                context.num_samples,
+                ctx.num_samples,
                 self.num_repetitions,
                 self.num_leaves,
                 self._n_dists,
@@ -122,19 +123,19 @@ class MultivariateNormal(AbstractLeaf):
 
         # Filter each sample by its specific repetition
         tmp = torch.zeros(
-            num_samples,
+            ctx.num_samples,
             out_channels,
             n_dists,
             cardinality,
-            device=context.indices_repetition.device,
+            device=ctx.indices_repetition.device,
         )
-        for i in range(num_samples):
-            tmp[i] = samples[i, context.indices_repetition[i], ...]
+        for i in range(ctx.num_samples):
+            tmp[i] = samples[i, ctx.indices_repetition[i], ...]
 
         samples = tmp  # [n, oc, d/k, k]
 
         samples = samples.view(
-            context.num_samples,
+            ctx.num_samples,
             self.num_leaves,
             self._n_dists,
             self.cardinality,
@@ -144,7 +145,6 @@ class MultivariateNormal(AbstractLeaf):
         return samples
 
     def _get_base_distribution(self):
-
         if self.min_sigma < self.max_sigma:
             # scale diag to [min_sigma, max_sigma]
             cov_diag = self.cov_tril_wi_diag

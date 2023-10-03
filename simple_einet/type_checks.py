@@ -1,6 +1,7 @@
+from typing import Any
+
 import numpy as np
 import torch
-from typing import Any
 
 
 class OutOfBoundsException(Exception):
@@ -32,7 +33,6 @@ class InvalidTypeException(Exception):
         )
 
 
-
 def _check_bounds(value: Any, expected_type, lower_bound=None, upper_bound=None):
     """
     Check if a given value is within the specified bounds.
@@ -55,7 +55,6 @@ def _check_bounds(value: Any, expected_type, lower_bound=None, upper_bound=None)
     if upper_bound:
         if not value < expected_type(upper_bound):
             raise OutOfBoundsException(value, lower_bound, upper_bound)
-
 
 
 def _check_type(value: Any, expected_type):
@@ -82,7 +81,6 @@ def _check_type(value: Any, expected_type):
         raise Exception(f"Unsupported type ({type(value)}) for typecheck.")
 
 
-
 def _check_type_core(value: Any, expected_type: type) -> None:
     """
     Check if the given value is of the expected type.
@@ -98,7 +96,6 @@ def _check_type_core(value: Any, expected_type: type) -> None:
         raise InvalidTypeException(value, expected_type)
     elif expected_type == int and not isinstance(value, int):
         raise InvalidTypeException(value, expected_type)
-
 
 
 def _check_type_numpy(value: Any, expected_type):
@@ -149,7 +146,6 @@ def _check_type_torch(value: torch.Tensor, expected_type):
             raise InvalidTypeException(value, expected_type)
     else:
         raise Exception(f"Unexpected data type, must be either int or float, but was {expected_type}")
-
 
 
 def check_valid(value: Any, expected_type, lower_bound=None, upper_bound=None, allow_none: bool = False):

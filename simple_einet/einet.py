@@ -1,8 +1,8 @@
-from collections import defaultdict
 import logging
+from collections import defaultdict
 from dataclasses import dataclass
 from operator import xor
-from typing import Any, Dict, List, Sequence, Tuple, Type
+from typing import Any, Dict, List, Sequence, Tuple, Type, Union
 
 import numpy as np
 import torch
@@ -10,19 +10,17 @@ from fast_pytorch_kmeans import KMeans
 from torch import nn
 from torch.utils.data import DataLoader
 
-from simple_einet.distributions import AbstractLeaf, RatNormal, truncated_normal_
-from simple_einet.einsum_layer import (
+from simple_einet.layers.distributions.abstract_leaf import AbstractLeaf
+from simple_einet.layers.einsum import (
     EinsumLayer,
-    EinsumMixingLayer,
-    LinsumLayer,
-    LinsumLayerLogWeights,
-    MixingLayer,
     logsumexp,
 )
-from simple_einet.factorized_leaf_layer import FactorizedLeaf
-from simple_einet.layers import Sum
+from simple_einet.layers.mixing import MixingLayer
+from simple_einet.layers.factorized_leaf import FactorizedLeaf
+from simple_einet.layers.linsum import LinsumLayer
+from simple_einet.sampling_utils import sampling_context, SamplingContext
+from simple_einet.layers.sum import SumLayer
 from simple_einet.type_checks import check_valid
-from simple_einet.sampling_utils import provide_evidence, SamplingContext
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +53,7 @@ class EinetConfig:
     dropout: float = 0.0
     leaf_type: Type = None
     leaf_kwargs: Dict[str, Any] = None
-    cross_product: bool = False
-    log_weights: bool = False
+    layer_type: str = "linsum"
 
     def assert_valid(self):
         """Check whether the configuration is valid."""
@@ -113,9 +110,6 @@ class Einet(nn.Module):
 
         # Construct the architecture
         self._build()
-
-        # Initialize weights
-        self._init_weights()
 
     def forward(self, x: torch.Tensor, marginalization_mask: torch.Tensor = None) -> torch.Tensor:
         """
@@ -232,7 +226,7 @@ class Einet(nn.Module):
         """
         # Forward to inner product and sum layers
         log_var = torch.zeros_like(log_exp).log()
-        for layer in self.einsum_layers:
+        for layer in self.layers:
             log_exp, log_var = layer.forward_tdi(log_exp, log_var, dropout_inference)
         return log_exp, log_var
 
@@ -247,7 +241,7 @@ class Einet(nn.Module):
             torch.Tensor: Output of the last layer before the root layer.
         """
         # Forward to inner product and sum layers
-        for layer in self.einsum_layers:
+        for layer in self.layers:
             x = layer(x)
         return x
 
@@ -299,10 +293,9 @@ class Einet(nn.Module):
         # Internal Region:  Create S sum nodes
         # Partition:        Cross products of all child-regions
 
-        einsum_layers = []
+        layers: List[Union[EinsumLayer, LinsumLayer]] = []
 
         for i in np.arange(start=1, stop=self.config.depth + 1):
-
             if i < self.config.depth:
                 _num_sums_in = self.config.num_sums
             else:
@@ -315,7 +308,7 @@ class Einet(nn.Module):
 
             in_features = 2**i
 
-            if self.config.cross_product:
+            if self.config.layer_type == "einsum":
                 layer = EinsumLayer(
                     num_features=in_features,
                     num_sums_in=_num_sums_in,
@@ -323,7 +316,7 @@ class Einet(nn.Module):
                     num_repetitions=self.config.num_repetitions,
                     dropout=self.config.dropout,
                 )
-            else:
+            elif self.config.layer_type == "linsum":
                 layer = LinsumLayer(
                     num_features=in_features,
                     num_sums_in=_num_sums_in,
@@ -331,14 +324,16 @@ class Einet(nn.Module):
                     num_repetitions=self.config.num_repetitions,
                     dropout=self.config.dropout,
                 )
+            else:
+                raise ValueError(f"Unknown layer type {self.config.layer_type}")
 
-            einsum_layers.append(layer)
+            layers.append(layer)
 
         # Construct leaf
-        self.leaf = self._build_input_distribution(num_features_out=einsum_layers[-1].num_features)
+        self.leaf = self._build_input_distribution(num_features_out=layers[-1].num_features)
 
         # List layers in a bottom-to-top fashion
-        self.einsum_layers: Sequence[EinsumLayer] = nn.ModuleList(reversed(einsum_layers))
+        self.layers: List[Union[EinsumLayer, LinsumLayer]] = nn.ModuleList(reversed(layers))
 
         # If model has multiple reptitions, add repetition mixing layer
         if self.config.num_repetitions > 1:
@@ -350,16 +345,17 @@ class Einet(nn.Module):
             )
 
         # Construct sampling root with weights according to priors for sampling
-        self._sampling_root = Sum(
-            num_sums_in=self.config.num_classes,
-            num_features=1,
-            num_sums_out=1,
-            num_repetitions=1,
-        )
-        self._sampling_root.weights = nn.Parameter(
-            torch.ones(size=(1, self.config.num_classes, 1, 1)) * torch.tensor(1 / self.config.num_classes),
-            requires_grad=False,
-        )
+        if self.config.num_classes > 1:
+            self._class_sampling_root = SumLayer(
+                num_sums_in=self.config.num_classes,
+                num_features=1,
+                num_sums_out=1,
+                num_repetitions=1,
+            )
+            self._class_sampling_root.weights = nn.Parameter(
+                torch.log(torch.ones(size=(1, self.config.num_classes, 1, 1)) * torch.tensor(1 / self.config.num_classes)),
+                requires_grad=False,
+            )
 
     def _build_input_distribution(self, num_features_out: int):
         """Construct the input distribution layer."""
@@ -380,28 +376,15 @@ class Einet(nn.Module):
         )
 
     @property
-    def __device(self):
+    def _device(self):
         """Small hack to obtain the current device."""
-        return self._sampling_root.weights.device
-
-    def _init_weights(self):
-        """Initiale the weights. Calls `_init_weights` on all modules that have this method."""
-        for module in self.modules():
-            # if hasattr(module, "_init_weights") and module != self:
-            #     module._init_weights()
-            if isinstance(module, EinsumMixingLayer):
-                truncated_normal_(module.weights, std=0.5)
-            elif isinstance(module, EinsumLayer):
-                truncated_normal_(module.weights, std=0.5)
-            elif isinstance(module, Sum):
-                truncated_normal_(module.weights, std=0.5)
-            elif isinstance(module, RatNormal):
-                truncated_normal_(module.stds, std=0.1)
+        return self.layers[-1].logits.device
 
     def mpe(
         self,
         evidence: torch.Tensor = None,
         marginalized_scopes: List[int] = None,
+        is_differentiable: bool = False,
     ) -> torch.Tensor:
         """
         Perform MPE given some evidence.
@@ -411,7 +394,9 @@ class Einet(nn.Module):
         Returns:
             torch.Tensor: Clone of input tensor with NaNs replaced by MPE estimates.
         """
-        return self.sample(evidence=evidence, is_mpe=True, marginalized_scopes=marginalized_scopes)
+        return self.sample(
+            evidence=evidence, is_mpe=True, marginalized_scopes=marginalized_scopes, is_differentiable=is_differentiable
+        )
 
     def sample(
         self,
@@ -423,6 +408,8 @@ class Einet(nn.Module):
         temperature_leaves: float = 1.0,
         temperature_sums: float = 1.0,
         marginalized_scopes: List[int] = None,
+        is_differentiable: bool = False,
+        seed: int = None,
     ):
         """
         Sample from the distribution represented by this SPN.
@@ -446,8 +433,9 @@ class Einet(nn.Module):
                 sampled values.
             is_mpe: Flag to perform max sampling (MPE).
             mpe_at_leaves: Flag to perform mpe only at leaves.
-            temperature_leaves: Variance scaling for leaf distribution samples.
-            temperature_sums: Variance scaling for sum node categorical sampling.
+            marginalized_scopes: List of scopes to marginalize.
+            is_differentiable: Flag to enable differentiable sampling.
+            seed: Seed for torch.random.
 
         Returns:
             torch.Tensor: Samples generated according to the distribution specified by the SPN.
@@ -457,6 +445,9 @@ class Einet(nn.Module):
         assert (
             num_samples is None or evidence is None
         ), "Cannot provide both, number of samples to generate (num_samples) and evidence."
+        assert ((class_index is not None) and (self.config.num_classes > 1)) or (
+            (class_index is None) and (self.config.num_classes == 1)
+        )
 
         # Check if evidence contains nans
         if evidence is not None:
@@ -465,175 +456,78 @@ class Einet(nn.Module):
         elif num_samples is None:
             num_samples = 1
 
-        with provide_evidence(self, evidence, marginalized_scopes):
-            # If class is given, use it as base index
-            if class_index is not None:
-                if isinstance(class_index, list):
-                    indices = torch.tensor(class_index, device=self.__device).view(-1, 1)
-                    num_samples = indices.shape[0]
+        if is_differentiable:
+            indices_out = torch.ones(
+                size=(num_samples, 1, 1), dtype=torch.float, device=self._device, requires_grad=True
+            )
+            indices_repetition = torch.ones(
+                size=(num_samples, 1), dtype=torch.float, device=self._device, requires_grad=True
+            )
+        else:
+            indices_out = torch.zeros(size=(num_samples, 1), dtype=torch.long, device=self._device)
+            indices_repetition = torch.zeros(
+                size=(num_samples,), dtype=torch.long, device=self._device
+            )
+
+        ctx = SamplingContext(
+            num_samples=num_samples,
+            is_mpe=is_mpe,
+            mpe_at_leaves=mpe_at_leaves,
+            temperature_leaves=temperature_leaves,
+            temperature_sums=temperature_sums,
+            num_repetitions=self.config.num_repetitions,
+            evidence=evidence,
+            indices_out=indices_out,
+            indices_repetition=indices_repetition,
+            is_differentiable=is_differentiable,
+        )
+        with sampling_context(self, evidence, marginalized_scopes, requires_grad=is_differentiable, seed=seed):
+            if self.config.num_classes > 1:
+                # If class is given, use it as base index
+                if class_index is not None:
+                    # Construct indices tensor based on given classes
+                    if isinstance(class_index, list):
+                        # A list of classes was given, one element for each sample
+                        indices = torch.tensor(class_index, device=self._device).view(-1, 1)
+                        if is_differentiable:
+                            # TODO: Test this
+                            # One hot encode
+                            indices = torch.zeros(
+                                size=(num_samples, self.config.num_classes, 1), dtype=torch.float, device=self._device
+                            ).scatter_(1, indices.unsqueeze(-1), 1)
+                            indices.requireds_grad_(True)  # Enable gradients
+                        num_samples = indices.shape[0]
+                    else:
+                        indices = torch.empty(size=(num_samples, 1), dtype=torch.long, device=self._device)
+                        indices.fill_(class_index)
+                        if is_differentiable:
+                            # TODO: Test this
+                            # One hot encode
+                            indices = torch.zeros(
+                                size=(num_samples, self.config.num_classes, 1), dtype=torch.float, device=self._device
+                            ).scatter_(1, indices.unsqueeze(-1), 1)
+                            indices.requires_grad_(True)  # Enable gradients
+
+                    ctx.indices_out = indices
+
+            # Save parent indices that were sampled from the sampling root
+            if self.config.num_repetitions > 1:
+                indices_out_pre_root = ctx.indices_out
+                ctx = self.mixing.sample(ctx=ctx)
+
+                # Obtain repetition indices
+                if is_differentiable:
+                    ctx.indices_repetition = ctx.indices_out.view(num_samples, self.config.num_repetitions)
                 else:
-                    indices = torch.empty(size=(num_samples, 1), device=self.__device)
-                    indices.fill_(class_index)
-
-                # Create new sampling context
-                ctx = SamplingContext(
-                    num_samples=num_samples,
-                    indices_out=indices,
-                    indices_repetition=None,
-                    is_mpe=is_mpe,
-                    mpe_at_leaves=mpe_at_leaves,
-                    temperature_leaves=temperature_leaves,
-                    temperature_sums=temperature_sums,
-                    num_repetitions=self.config.num_repetitions,
-                    evidence=evidence,
-                )
-            else:
-                # Start sampling one of the C root nodes TODO: check what happens if C=1
-                ctx = SamplingContext(
-                    num_samples=num_samples,
-                    is_mpe=is_mpe,
-                    mpe_at_leaves=mpe_at_leaves,
-                    temperature_leaves=temperature_leaves,
-                    temperature_sums=temperature_sums,
-                    num_repetitions=self.config.num_repetitions,
-                    evidence=evidence,
-                )
-                ctx = self._sampling_root.sample(context=ctx)
-
-            # Save parent indices that were sampled from the sampling root
-            if self.config.num_repetitions > 1:
-                indices_out_pre_root = ctx.indices_out
-
-                ctx.indices_repetition = torch.zeros(num_samples, dtype=int, device=self.__device)
-                ctx = self.mixing.sample(context=ctx)
-
-                # Obtain repetition indices
-                ctx.indices_repetition = ctx.indices_out.view(num_samples)
+                    ctx.indices_repetition = ctx.indices_out.view(num_samples)
                 ctx.indices_out = indices_out_pre_root
 
             # Sample inner layers in reverse order (starting from topmost)
-            for layer in reversed(self.einsum_layers):
-                ctx = layer.sample(num_samples=ctx.num_samples, context=ctx)
+            for layer in reversed(self.layers):
+                ctx = layer.sample(ctx=ctx)
 
             # Sample leaf
-            samples = self.leaf.sample(context=ctx)
-
-            if evidence is not None:
-                # First make a copy such that the original object is not changed
-                evidence = evidence.clone()
-                shape_evidence = evidence.shape
-                evidence = evidence.view_as(samples)
-                evidence[:, :, marginalized_scopes] = samples[:, :, marginalized_scopes]
-                evidence = evidence.view(shape_evidence)
-                return evidence
-            else:
-                return samples
-
-    def sample_differentiable(
-        self,
-        num_samples: int = None,
-        class_index=None,
-        evidence: torch.Tensor = None,
-        is_mpe: bool = False,
-        temperature_leaves: float = 1.0,
-        temperature_sums: float = 1.0,
-        marginalized_scopes: List[int] = None,
-        hard=False,
-        tau=1.0,
-        mpe_at_leaves=False,
-    ) -> torch.Tensor:
-        """
-        Sample from the distribution represented by this SPN.
-
-        Possible valid inputs:
-
-        - `num_samples`: Generates `num_samples` samples.
-        - `num_samples` and `class_index (int)`: Generates `num_samples` samples from P(X | C = class_index).
-        - `class_index (List[int])`: Generates `len(class_index)` samples. Each index `c_i` in `class_index` is mapped
-            to a sample from P(X | C = c_i)
-        - `evidence`: If evidence is given, samples conditionally and fill NaN values.
-
-        Args:
-            num_samples: Number of samples to generate.
-            class_index: Class index. Can be either an int in combination with a value for `num_samples` which will result in `num_samples`
-                samples from P(X | C = class_index). Or can be a list of ints which will map each index `c_i` in the
-                list to a sample from P(X | C = c_i).
-            evidence: Evidence that can be provided to condition the samples. If evidence is given, `num_samples` and
-                `class_index` must be `None`. Evidence must contain NaN values which will be imputed according to the
-                distribution represented by the SPN. The result will contain the evidence and replace all NaNs with the
-                sampled values.
-            is_mpe: Flag to perform max sampling (MPE).
-            temperature_leaves: Variance scaling for leaf distribution samples.
-            temperature_sums: Variance scaling for sum node categorical sampling.
-            marginalized_scopes: List of scope indices to be marginalized.
-            hard: Flag to perform hard sampling.
-            tau: Temperature for categorical sampling.
-
-        Returns:
-            torch.Tensor: Samples generated according to the distribution specified by the SPN.
-
-        """
-        assert class_index is None or evidence is None, "Cannot provide both, evidence and class indices."
-        assert (
-            num_samples is None or evidence is None
-        ), "Cannot provide both, number of samples to generate (num_samples) and evidence."
-
-        # Check if evidence contains nans
-        if evidence is not None:
-            # Set n to the number of samples in the evidence
-            num_samples = evidence.shape[0]
-        elif num_samples is None:
-            num_samples = 1
-
-        with provide_evidence(self, evidence, marginalized_scopes, requires_grad=True):
-            # If class is given, use it as base index
-            # Start sampling one of the C root nodes
-            ctx = SamplingContext(
-                num_samples=num_samples,
-                is_mpe=is_mpe,
-                temperature_leaves=temperature_leaves,
-                temperature_sums=temperature_sums,
-                num_repetitions=self.config.num_repetitions,
-                evidence=evidence,
-                is_differentiable=True,
-                hard=hard,
-                tau=tau,
-                mpe_at_leaves=mpe_at_leaves,
-            )
-            ctx.indices_out = torch.ones(
-                num_samples,
-                1,
-                1,
-                dtype=torch.float,
-                device=self.__device,
-                requires_grad=True,
-            )
-
-            # Save parent indices that were sampled from the sampling root
-            if self.config.num_repetitions > 1:
-                indices_out_pre_root = ctx.indices_out
-
-                ctx.indices_repetition = torch.ones(num_samples, 1, dtype=torch.float, device=self.__device)
-                ctx = self.mixing.sample(context=ctx)
-
-                # Obtain repetition indices
-                ctx.indices_repetition = ctx.indices_out.view(num_samples, self.config.num_repetitions)
-                ctx.indices_out = indices_out_pre_root
-            else:
-                ctx.indices_repetition = torch.ones(
-                    num_samples,
-                    1,
-                    dtype=torch.float,
-                    device=self.__device,
-                    requires_grad=True,
-                )
-
-            # Sample inner layers in reverse order (starting from topmost)
-            for layer in reversed(self.einsum_layers):
-                ctx = layer.sample(num_samples=ctx.num_samples, context=ctx)
-
-            # Sample leaf
-            samples = self.leaf.sample(context=ctx)
+            samples = self.leaf.sample(ctx=ctx)
 
             if evidence is not None:
                 # First make a copy such that the original object is not changed

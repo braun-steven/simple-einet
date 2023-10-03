@@ -1,14 +1,14 @@
-from simple_einet.type_checks import check_valid
-
-
 import logging
 from abc import ABC, abstractmethod
-from simple_einet.layers import AbstractLayer
-from simple_einet.sampling_utils import SamplingContext, index_one_hot
 from typing import List
-from torch import distributions as dist, nn
-import torch
 
+import torch
+from torch import distributions as dist, nn
+
+from simple_einet.abstract_layers import AbstractLayer
+from simple_einet.sampling_utils import SamplingContext, index_one_hot
+from simple_einet.type_checks import check_valid
+from torch.nn import functional as F
 
 logger = logging.getLogger(__name__)
 
@@ -41,68 +41,73 @@ def dist_forward(distribution, x: torch.Tensor):
     return x
 
 
-def dist_mode(distribution: dist.Distribution, context: SamplingContext = None) -> torch.Tensor:
+def dist_mode(distribution: dist.Distribution, ctx: SamplingContext = None) -> torch.Tensor:
     """
     Get the mode of a given distribution.
 
     Args:
         distribution: Leaf distribution from which to choose the mode from.
-        context: Sampling context.
+        ctx: Sampling context.
     Returns:
         torch.Tensor: Mode of the given distribution.
     """
     # TODO: Implement more torch distributions
     if isinstance(distribution, dist.Normal):
         # Repeat the mode along the batch axis
-        return distribution.mean.repeat(context.num_samples, 1, 1, 1, 1)
-    from simple_einet.distributions.normal import CustomNormal
-    from simple_einet.distributions.binomial import CustomBinomial
+        return distribution.mean.repeat(ctx.num_samples, 1, 1, 1, 1)
+    from simple_einet.layers.distributions.normal import CustomNormal
+    from simple_einet.layers.distributions.binomial import DifferentiableBinomial
 
     if isinstance(distribution, CustomNormal):
         # Repeat the mode along the batch axis
-        return distribution.mu.repeat(context.num_samples, 1, 1, 1, 1)
+        return distribution.mu.repeat(ctx.num_samples, 1, 1, 1, 1)
     elif isinstance(distribution, dist.Bernoulli):
         mode = distribution.probs.clone()
         mode[mode >= 0.5] = 1.0
         mode[mode < 0.5] = 0.0
-        return mode.repeat(context.num_samples, 1, 1, 1, 1)
-    elif isinstance(distribution, dist.Binomial) or isinstance(distribution, CustomBinomial):
+        return mode.repeat(ctx.num_samples, 1, 1, 1, 1)
+    elif isinstance(distribution, dist.Binomial) or isinstance(distribution, DifferentiableBinomial):
         mode = distribution.probs.clone()
         total_count = distribution.total_count
         mode = torch.floor(mode * (total_count + 1))
         if mode.shape[0] == 1:
-            return mode.repeat(context.num_samples, 1, 1, 1, 1)
+            return mode.repeat(ctx.num_samples, 1, 1, 1, 1)
         else:
             return mode
-
+    elif isinstance(distribution, dist.Categorical):
+        probs = distribution.probs.clone()
+        mode = torch.argmax(probs, dim=-1)
+        return mode.repeat(ctx.num_samples, 1, 1, 1, 1)
     else:
         raise Exception(f"MPE not yet implemented for type {type(distribution)}")
 
 
-def dist_sample(distribution: dist.Distribution, context: SamplingContext = None) -> torch.Tensor:
+def dist_sample(distribution: dist.Distribution, ctx: SamplingContext = None) -> torch.Tensor:
     """
     Sample n samples from a given distribution.
 
     Args:
         distribution: Leaf distribution from which to sample from.
-        context: Sampling context.
+        ctx: Sampling context.
 
     Returns:
         torch.Tensor: Samples from the given distribution.
     """
 
     # Sample from the specified distribution
-    if context.is_mpe or context.mpe_at_leaves:
-        samples = dist_mode(distribution, context)
+    if ctx.is_mpe or ctx.mpe_at_leaves:
+        samples = dist_mode(distribution, ctx).float()
         samples = samples.unsqueeze(1)
     else:
-        from simple_einet.distributions import CustomNormal
+        from simple_einet.layers.distributions.normal import CustomNormal
 
         if type(distribution) == dist.Normal:
-            distribution = dist.Normal(loc=distribution.loc, scale=distribution.scale * context.temperature_leaves)
+            distribution = dist.Normal(loc=distribution.loc, scale=distribution.scale / ctx.temperature_leaves)
         elif type(distribution) == CustomNormal:
-            distribution = CustomNormal(mu=distribution.mu, sigma=distribution.sigma * context.temperature_leaves)
-        samples = distribution.sample(sample_shape=(context.num_samples,))
+            distribution = CustomNormal(mu=distribution.mu, sigma=distribution.sigma / ctx.temperature_leaves)
+        elif type(distribution) == dist.Categorical:
+            distribution = dist.Categorical(logits=F.log_softmax(distribution.probs / ctx.temperature_leaves))
+        samples = distribution.sample(sample_shape=(ctx.num_samples,)).float()
 
     assert (
         samples.shape[1] == 1
@@ -112,22 +117,19 @@ def dist_sample(distribution: dist.Distribution, context: SamplingContext = None
     samples.squeeze_(1)
     num_samples, num_channels, num_features, num_leaves, num_repetitions = samples.shape
 
-    # Index samples to get the correct repetitions
-    # TODO: instead of indexing samples to get correct repetition, rather do this before sampling
-    #  to save time
-    if not context.is_differentiable:
-        r_idxs = context.indices_repetition.view(-1, 1, 1, 1, 1)
+    if ctx.is_differentiable:
+        r_idxs = ctx.indices_repetition.view(num_samples, 1, 1, 1, num_repetitions)
+        samples = index_one_hot(samples, index=r_idxs, dim=-1)
+    else:
+        r_idxs = ctx.indices_repetition.view(-1, 1, 1, 1, 1)
         r_idxs = r_idxs.expand(-1, num_channels, num_features, num_leaves, -1)
         samples = samples.gather(dim=-1, index=r_idxs)
         samples = samples.squeeze(-1)
-    else:
-        r_idxs = context.indices_repetition.view(num_samples, 1, 1, 1, num_repetitions)
-        samples = index_one_hot(samples, index=r_idxs, dim=-1)
 
     # If parent index into out_channels are given
-    if context.indices_out is not None:
+    if ctx.indices_out is not None:
         # Choose only specific samples for each feature/scope
-        samples = torch.gather(samples, dim=2, index=context.indices_out.unsqueeze(-1)).squeeze(-1)
+        samples = torch.gather(samples, dim=2, index=ctx.indices_out.unsqueeze(-1)).squeeze(-1)
 
     return samples
 
@@ -166,10 +168,8 @@ class AbstractLeaf(AbstractLayer, ABC):
             cardinality: Number of random variables covered by a single leaf.
         """
         super().__init__(num_features=num_features, num_repetitions=num_repetitions)
-        self.num_features = check_valid(num_features, int, 1)
         self.num_channels = check_valid(num_channels, int, 1)
         self.num_leaves = check_valid(num_leaves, int, 1)
-        self.num_repetitions = check_valid(num_repetitions, int, 1)
         self.cardinality = check_valid(cardinality, int, 1)
 
         self.out_features = num_features
@@ -243,23 +243,22 @@ class AbstractLeaf(AbstractLayer, ABC):
         return x
 
     @abstractmethod
-    def _get_base_distribution(self, context: SamplingContext = None) -> dist.Distribution:
+    def _get_base_distribution(self, ctx: SamplingContext = None) -> dist.Distribution:
         """Get the underlying torch distribution."""
         pass
 
-    def sample(self, num_samples: int = None, context: SamplingContext = None) -> torch.Tensor:
+    def sample(self, ctx: SamplingContext) -> torch.Tensor:
         """
         Sample from the distribution represented by this leaf node.
 
         Args:
-            num_samples (int, optional): The number of samples to draw from the distribution. If None, a single sample is drawn.
-            context (SamplingContext, optional): The sampling context to use when drawing samples.
+            ctx (SamplingContext, optional): The sampling context to use when drawing samples.
 
         Returns:
-            torch.Tensor: A tensor of shape (num_samples,) or (1,) containing the drawn samples.
+            torch.Tensor: A tensor of shape (context.num_samples,) or (1,) containing the drawn samples.
         """
-        d = self._get_base_distribution(context)
-        samples = dist_sample(distribution=d, context=context)
+        d = self._get_base_distribution(ctx)
+        samples = dist_sample(distribution=d, ctx=ctx)
         return samples
 
     def extra_repr(self):

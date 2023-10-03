@@ -44,8 +44,7 @@ def make_einet(cfg, num_classes: int = 1) -> EinetMixture | Einet:
         leaf_kwargs=leaf_kwargs,
         leaf_type=leaf_type,
         dropout=cfg.dropout,
-        cross_product=cfg.cp,
-        log_weights=cfg.log_weights,
+        layer_type=cfg.layer_type,
     )
     if cfg.einet_mixture:
         return EinetMixture(n_components=num_classes, einet_config=config)
@@ -171,7 +170,7 @@ class SpnGenerative(LitModel):
         if not differentiable:
             samples = self.spn.sample(num_samples=num_samples, mpe_at_leaves=True).view(-1, *self.image_shape)
         else:
-            samples = self.spn.sample_differentiable(num_samples=num_samples, mpe_at_leaves=True, hard=True).view(
+            samples = self.spn.sample(num_samples=num_samples, mpe_at_leaves=True, is_differentiable=True).view(
                 -1, *self.image_shape
             )
         samples = samples / 255.0
