@@ -17,3 +17,4 @@ wandb==0.15.11
 hydra_colorlog==1.2.0
 fast_pytorch_kmeans==0.2.0.1
 tensorboard==2.14.1
+parameterized==0.9.0
