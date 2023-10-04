@@ -5,6 +5,7 @@ from parameterized import parameterized
 
 from simple_einet.abstract_layers import logits_to_log_weights
 from simple_einet.layers.einsum import EinsumLayer
+from simple_einet.sampling_utils import index_one_hot
 from simple_einet.tests.layers.test_utils import get_sampling_context
 
 
@@ -58,3 +59,14 @@ class TestEinsumLayer(TestCase):
         sums = log_weights.logsumexp(dim=2)
         target = torch.zeros_like(sums)
         self.assertTrue(torch.allclose(sums, target, atol=1e-5))
+
+    def test__differentiable_sampling_has_grads(self):
+        N = 2
+        ctx = get_sampling_context(layer=self.layer, num_samples=N, is_differentiable=True)
+        ctx = self.layer.sample(ctx)
+
+        sample = torch.randn(N, self.layer.num_features, self.layer.num_sums_in, self.layer.num_repetitions)
+        sample = index_one_hot(sample, index=ctx.indices_repetition.unsqueeze(1).unsqueeze(2), dim=-1)
+        sample = index_one_hot(sample, index=ctx.indices_out, dim=-1)
+        sample.mean().backward()
+        self.assertTrue(self.layer.logits.grad is not None)
