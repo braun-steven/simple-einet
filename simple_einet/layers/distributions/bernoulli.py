@@ -28,4 +28,4 @@ class Bernoulli(AbstractLeaf):
 
     def _get_base_distribution(self):
         # Use sigmoid to ensure, that probs are in valid range
-        return dist.Bernoulli(probs=self.sigmoid(self.probs))
+        return dist.Bernoulli(probs=torch.sigmoid(self.probs))
