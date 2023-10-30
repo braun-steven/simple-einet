@@ -275,7 +275,7 @@ class Einet(nn.Module):
             num_channels=self.config.num_channels,
             num_leaves=self.config.num_leaves,
             num_repetitions=self.config.num_repetitions,
-            **self.config.leaf_kwargs,
+            **self.config.leaf_kwargs if self.config.leaf_kwargs is not None else {},
         )
 
         return FactorizedLeaf(
