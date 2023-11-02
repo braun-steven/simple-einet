@@ -122,7 +122,7 @@ class CustomNormal:
         self.mu = mu
         self.sigma = sigma
 
-    def sample(self, sample_shape: Tuple[int]):
+    def sample(self, sample_shape: Tuple[int]) -> torch.Tensor:
         """
         Generates random samples from the normal distribution with mean `mu` and standard deviation `sigma`.
 
@@ -136,6 +136,18 @@ class CustomNormal:
         eps = torch.randn((num_samples,) + self.mu.shape, dtype=self.mu.dtype, device=self.mu.device)
         samples = self.mu.unsqueeze(0) + self.sigma.unsqueeze(0) * eps
         return samples
+
+    def mpe(self, num_samples) -> torch.Tensor:
+        """
+        Generates MPE samples from the normal distribution with mean `mu` and standard deviation `sigma`.
+
+        Args:
+            num_samples (int): The number of samples to generate.
+
+        Returns:
+            samples (torch.Tensor): A tensor of shape `num_samples + mu.shape` containing MPE samples from the normal distribution.
+        """
+        return self.mu.repeat(num_samples, 1, 1, 1, 1)
 
     def log_prob(self, x):
         """

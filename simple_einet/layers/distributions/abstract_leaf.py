@@ -55,12 +55,18 @@ def dist_mode(distribution: dist.Distribution, ctx: SamplingContext = None) -> t
     if isinstance(distribution, dist.Normal):
         # Repeat the mode along the batch axis
         return distribution.mean.repeat(ctx.num_samples, 1, 1, 1, 1)
+
+    from simple_einet.layers.distributions.multivariate_normal import CustomMultivariateNormalDist
+
+    if isinstance(distribution, CustomMultivariateNormalDist):
+        return distribution.mpe(num_samples=ctx.num_samples)
+
     from simple_einet.layers.distributions.normal import CustomNormal
     from simple_einet.layers.distributions.binomial import DifferentiableBinomial
 
     if isinstance(distribution, CustomNormal):
         # Repeat the mode along the batch axis
-        return distribution.mu.repeat(ctx.num_samples, 1, 1, 1, 1)
+        return distribution.mpe(num_samples=ctx.num_samples)
     elif isinstance(distribution, dist.Bernoulli):
         mode = distribution.probs.clone()
         mode[mode >= 0.5] = 1.0
