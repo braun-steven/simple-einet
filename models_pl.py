@@ -31,7 +31,7 @@ def make_einet(cfg, num_classes: int = 1) -> EinetMixture | Einet:
 
     image_shape = get_data_shape(cfg.dataset)
     # leaf_kwargs, leaf_type = {"total_count": 255}, Binomial
-    leaf_kwargs, leaf_type = get_distribution(dist=cfg.dist, min_sigma=cfg.min_sigma, max_sigma=cfg.max_sigma)
+    leaf_kwargs, leaf_type = get_distribution(dist=cfg.dist, cfg=cfg)
 
     config = EinetConfig(
         num_features=image_shape.num_pixels,
