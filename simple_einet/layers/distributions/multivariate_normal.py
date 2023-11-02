@@ -66,8 +66,8 @@ class MultivariateNormal(AbstractLeaf):
 
     def _get_base_distribution(self, ctx: SamplingContext = None, marginalized_scopes = None):
         # View means and scale_tril
-        means = self.means.view(self._num_dists, cardinality)
-        scale_tril = self.scale_tril.view(self._num_dists, cardinality, cardinality)
+        means = self.means.view(self._num_dists, self.cardinality)
+        scale_tril = self.scale_tril.view(self._num_dists, self.cardinality, self.cardinality)
 
 
         mv = CustomMultivariateNormalDist(
