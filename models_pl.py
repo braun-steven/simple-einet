@@ -182,9 +182,9 @@ class SpnGenerative(LitModel):
             grid = torchvision.utils.make_grid(samples.data[:64], nrow=8, pad_value=0.0, normalize=True)
             self.logger.log_image(key="samples", images=[grid])
 
-            samples_diff = self.generate_samples(num_samples=64, differentiable=True)
-            grid_diff = torchvision.utils.make_grid(samples_diff.data[:64], nrow=8, pad_value=0.0, normalize=True)
-            self.logger.log_image(key="samples_diff", images=[grid_diff])
+            # samples_diff = self.generate_samples(num_samples=64, differentiable=True)
+            # grid_diff = torchvision.utils.make_grid(samples_diff.data[:64], nrow=8, pad_value=0.0, normalize=True)
+            # self.logger.log_image(key="samples_diff", images=[grid_diff])
 
         super().on_train_epoch_end()
 
