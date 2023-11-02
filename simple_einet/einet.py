@@ -273,7 +273,7 @@ class Einet(nn.Module):
     @property
     def _device(self):
         """Small hack to obtain the current device."""
-        return self.layers[-1].logits.device
+        return next(self.parameters()).device
 
     def mpe(
         self,
