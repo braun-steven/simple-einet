@@ -104,22 +104,12 @@ class FactorizedLeaf(AbstractLayer):
         samples = self.base_leaf.sample(ctx=ctx)
 
         # Check that shapes match as expected
-        if samples.dim() == 4:
-            assert samples.shape == (
-                ctx.num_samples,
-                self.base_leaf.num_channels,
-                self.num_features,
-                self.base_leaf.num_leaves,
-            )
-        elif samples.dim() == 5:
-            assert self.num_features == samples.shape[1]
-            assert hasattr(self.base_leaf, "cardinality")
-            assert samples.shape == (
-                ctx.num_samples,
-                self.base_leaf.out_features,
-                self.base_leaf.cardinality,
-                self.base_leaf.num_leaves,
-            )
+        assert samples.shape == (
+            ctx.num_samples,
+            self.base_leaf.num_channels,
+            self.base_leaf.num_features,
+            self.base_leaf.num_leaves,
+        )
 
         if ctx.is_differentiable:
             # Select the correct repetitions
@@ -139,6 +129,7 @@ class FactorizedLeaf(AbstractLayer):
             indices_in_gather = indices_in_gather.view(ctx.num_samples, 1, -1, 1)
 
             indices_in_gather = indices_in_gather.expand(-1, samples.shape[1], -1, -1)
+            indices_in_gather = indices_in_gather.repeat(1, 1, self.base_leaf.cardinality, 1)
             samples = samples.gather(dim=-1, index=indices_in_gather)
             samples.squeeze_(-1)  # Remove num_leaves dimension
 

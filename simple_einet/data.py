@@ -25,6 +25,7 @@ from torchvision.datasets import (
 
 from simple_einet.layers.distributions.binomial import Binomial
 from simple_einet.layers.distributions.categorical import Categorical
+from simple_einet.layers.distributions.multivariate_normal import MultivariateNormal
 from simple_einet.layers.distributions.normal import Normal, RatNormal
 
 
@@ -430,19 +431,18 @@ class Dist(str, Enum):
     """Enum for the distribution of the data."""
 
     NORMAL = "normal"
+    MULTIVARIATE_NORMAL = "multivariate_normal"
     NORMAL_RAT = "normal_rat"
     BINOMIAL = "binomial"
     CATEGORICAL = "categorical"
 
 
-def get_distribution(dist, min_sigma, max_sigma):
+def get_distribution(dist: Dist, cfg):
     """
     Get the distribution for the leaves.
 
     Args:
         dist: The distribution to use.
-        min_sigma: The minimum sigma for the leaves.
-        max_sigma: The maximum sigma for the leaves.
 
     Returns:
         leaf_type: The type of the leaves.
@@ -454,13 +454,16 @@ def get_distribution(dist, min_sigma, max_sigma):
         leaf_kwargs = {}
     elif dist == Dist.NORMAL_RAT:
         leaf_type = RatNormal
-        leaf_kwargs = {"min_sigma": min_sigma, "max_sigma": max_sigma}
+        leaf_kwargs = {"min_sigma": cfg.min_sigma, "max_sigma": cfg.max_sigma}
     elif dist == Dist.BINOMIAL:
         leaf_type = Binomial
-        leaf_kwargs = {"total_count": 2**8 - 1}
+        leaf_kwargs = {"total_count": 2**cfg.n_bits - 1}
     elif dist == Dist.CATEGORICAL:
         leaf_type = Categorical
-        leaf_kwargs = {"num_bins": 2**8 - 1}
+        leaf_kwargs = {"num_bins": 2**cfg.n_bits - 1}
+    elif dist == Dist.MULTIVARIATE_NORMAL:
+        leaf_type = MultivariateNormal
+        leaf_kwargs = {"cardinality": cfg.multivariate_cardinality}
     else:
-        raise ValueError("dist must be either normal or binomial")
+        raise ValueError(f"Unknown distribution ({dist}).")
     return leaf_kwargs, leaf_type

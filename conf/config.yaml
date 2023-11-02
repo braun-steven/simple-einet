@@ -56,3 +56,4 @@ num_classes: 10
 init_leaf_data: False
 einet_mixture: False
 torch_compile: False
+multivariate_cardinality: 2

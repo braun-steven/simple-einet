@@ -79,7 +79,7 @@ def main(cfg: DictConfig):
 
     logger.info("Training model...")
     # Create dataloader
-    normalize = cfg.dist == Dist.NORMAL
+    normalize = cfg.dist in [Dist.NORMAL, Dist.NORMAL_RAT, Dist.MULTIVARIATE_NORMAL]
     train_loader, val_loader, test_loader = build_dataloader(
         dataset_name=cfg.dataset,
         data_dir=cfg.data_dir,
