@@ -186,19 +186,28 @@ class Einet(nn.Module):
         # Internal Region:  Create S sum nodes
         # Partition:        Cross products of all child-regions
 
-        layers: List[Union[EinsumLayer, LinsumLayer]] = []
+        intermediate_layers: List[Union[EinsumLayer, LinsumLayer]] = []
 
+        # Construct layers from top to bottom
         for i in np.arange(start=1, stop=self.config.depth + 1):
+            # Choose number of input sum nodes
+            # - if this is an intermediate layer, use the number of sum nodes from the previous layer
+            # - if this is the first layer, use the number of leaves as the leaf layer is below the first sum layer
             if i < self.config.depth:
                 _num_sums_in = self.config.num_sums
             else:
                 _num_sums_in = self.config.num_leaves
 
-            if i > 1:
-                _num_sums_out = self.config.num_sums
-            else:
+            # Choose number of output sum nodes
+            # - if this is the last layer, use the number of classes
+            # - otherwise use the number of sum nodes from the next layer
+            if i == 1:
                 _num_sums_out = self.config.num_classes
+            else:
+                _num_sums_out = self.config.num_sums
 
+            # Calculate number of input features: since we represent a binary tree, each layer merges two partitions,
+            # hence viewing this from top down we have 2**i input features at the i-th layer
             in_features = 2**i
 
             if self.config.layer_type == "einsum":
@@ -220,13 +229,25 @@ class Einet(nn.Module):
             else:
                 raise ValueError(f"Unknown layer type {self.config.layer_type}")
 
-            layers.append(layer)
+            intermediate_layers.append(layer)
+
+        if self.config.depth == 0:
+            # Create a single sum layer
+            layer = SumLayer(
+                num_sums_in=self.config.num_leaves,
+                num_features=1,
+                num_sums_out=self.config.num_classes,
+                num_repetitions=self.config.num_repetitions,
+                dropout=self.config.dropout,
+            )
+            intermediate_layers.append(layer)
 
         # Construct leaf
-        self.leaf = self._build_input_distribution(num_features_out=layers[-1].num_features)
+        leaf_num_features_out = intermediate_layers[-1].num_features
+        self.leaf = self._build_input_distribution(num_features_out=leaf_num_features_out)
 
         # List layers in a bottom-to-top fashion
-        self.layers: List[Union[EinsumLayer, LinsumLayer]] = nn.ModuleList(reversed(layers))
+        self.layers: List[Union[EinsumLayer, LinsumLayer]] = nn.ModuleList(reversed(intermediate_layers))
 
         # If model has multiple reptitions, add repetition mixing layer
         if self.config.num_repetitions > 1:
@@ -260,7 +281,7 @@ class Einet(nn.Module):
             num_channels=self.config.num_channels,
             num_leaves=self.config.num_leaves,
             num_repetitions=self.config.num_repetitions,
-            **self.config.leaf_kwargs if self.config.leaf_kwargs is not None else {},
+            **self.config.leaf_kwargs,
         )
 
         return FactorizedLeaf(
@@ -641,3 +662,4 @@ def posterior(ll_x_g_y: torch.Tensor, num_classes) -> torch.Tensor:
     ll_x = torch.logsumexp(ll_x_and_y, dim=1, keepdim=True)
     ll_y_g_x = ll_x_g_y + ll_y - ll_x
     return ll_y_g_x
+
