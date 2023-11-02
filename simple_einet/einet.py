@@ -1,6 +1,6 @@
 import logging
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field, is_dataclass
 from operator import xor
 from typing import Any, Dict, List, Sequence, Tuple, Type, Union
 
@@ -25,67 +25,52 @@ from simple_einet.type_checks import check_valid
 logger = logging.getLogger(__name__)
 
 
-@dataclass
+@dataclass(frozen=True)
 class EinetConfig:
-    """
-    Class for keeping the RatSpn config. Parameter names are according to the original RatSpn paper.
+    """Class for the configuration of an Einet."""
 
-    num_features: int  # Number of input features
-    num_channels: int  # Number of input channels
-    num_sums: int  # Number of sum nodes at each layer
-    num_leaves: int  # Number of distributions for each scope at the leaf layer
-    num_repetitions: int  # Number of repetitions
-    num_classes: int  # Number of root heads / Number of classes
-    depth: int  # Tree depth
-    dropout: float  # Dropout probabilities for leaves and sum layers
-    leaf_type: Type  # Type of the leaf base class (Normal, Bernoulli, etc)
-    leaf_kwargs: Dict  # Parameters for the leaf base class
-    cross_product: bool  # Whether to use the cross-product in the einsumlayer or not
-    """
-
-    num_features: int = None
-    num_channels: int = 1
-    num_sums: int = 10
-    num_leaves: int = 10
-    num_repetitions: int = 5
-    num_classes: int = 1
-    depth: int = 1
-    dropout: float = 0.0
-    leaf_type: Type = None
-    leaf_kwargs: Dict[str, Any] = None
-    layer_type: str = "linsum"
+    num_features: int = None  # Number of input features
+    num_channels: int = 1  # Number of data input channels per feature
+    num_sums: int = 10  # Number of sum nodes at each layer
+    num_leaves: int = 10  # Number of distributions for each scope at the leaf layer
+    num_repetitions: int = 5  # Number of repetitions
+    num_classes: int = 1  # Number of root heads / Number of classes
+    depth: int = 1  # Tree depth
+    dropout: float = 0.0  # Dropout probabilities for leaves and sum layers
+    leaf_type: Type = None  # Type of the leaf base class (Normal, Bernoulli, etc)
+    leaf_kwargs: Dict[str, Any] = field(default_factory=dict)  # Parameters for the leaf base class
+    layer_type: str = "linsum"  # Indicates the intermediate layer type: linsum or einsum
 
     def assert_valid(self):
         """Check whether the configuration is valid."""
 
         # Check that each dimension is valid
-        self.depth = check_valid(self.depth, int, 1)
-        self.num_features = check_valid(self.num_features, int, 2)
-        self.num_channels = check_valid(self.num_channels, int, 1)
-        self.num_classes = check_valid(self.num_classes, int, 1)
-        self.num_sums = check_valid(self.num_sums, int, 1)
-        self.num_repetitions = check_valid(self.num_repetitions, int, 1)
-        self.num_leaves = check_valid(self.num_leaves, int, 1)
-        self.dropout = check_valid(self.dropout, float, 0.0, 1.0, allow_none=True)
+        check_valid(self.depth, int, 0)
+        check_valid(self.num_features, int, 2)
+        check_valid(self.num_channels, int, 1)
+        check_valid(self.num_classes, int, 1)
+        check_valid(self.num_sums, int, 1)
+        check_valid(self.num_repetitions, int, 1)
+        check_valid(self.num_leaves, int, 1)
+        check_valid(self.dropout, float, 0.0, 1.0, allow_none=True)
         assert self.leaf_type is not None, "EinetConfig.leaf_type parameter was not set!"
 
         assert isinstance(self.leaf_type, type) and issubclass(
             self.leaf_type, AbstractLeaf
         ), f"Parameter EinetConfig.leaf_base_class must be a subclass type of Leaf but was {self.leaf_type}."
 
-        assert (
-            2**self.depth <= self.num_features
-        ), f"The tree depth D={self.depth} must be <= {np.floor(np.log2(self.num_features))} (log2(in_features))."
-
-    def __setattr__(self, key, value):
-        """
-        Implement __setattr__ so that an EinetConfig object can be created empty `EinetConfig()` and properties can be
-        set afterwards.
-        """
-        if hasattr(self, key):
-            super().__setattr__(key, value)
+        # If the leaf layer is multivariate distribution, extract its cardinality
+        if "cardinality" in self.leaf_kwargs:
+            cardinality = self.leaf_kwargs["cardinality"]
         else:
-            raise AttributeError(f"EinetConfig object has no attribute {key}")
+            cardinality = 1
+
+        # Get minimum number of features present at the lowest layer (num_features is the actual input dimension,
+        # cardinality in multivariate distributions reduces this dimension since it merges groups of size #cardinality)
+        min_num_features = np.ceil(self.num_features // cardinality)
+        assert (
+            2**self.depth <= min_num_features
+        ), f"The tree depth D={self.depth} must be <= {np.floor(np.log2(min_num_features))} (log2(in_features // cardinality))."
 
 
 class Einet(nn.Module):
