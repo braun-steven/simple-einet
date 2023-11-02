@@ -84,10 +84,10 @@ class Einet(nn.Module):
 
     def __init__(self, config: EinetConfig):
         """
-        Create a RatSpn based on a configuration object.
+        Create a Einet based on a configuration object.
 
         Args:
-            config (RatSpnConfig): RatSpn configuration object.
+            config (EinetConfig): Einet configuration object.
         """
         super().__init__()
         config.assert_valid()
@@ -178,7 +178,7 @@ class Einet(nn.Module):
         return posterior(ll_x_g_y, self.config.num_classes)
 
     def _build(self):
-        """Construct the internal architecture of the RatSpn."""
+        """Construct the internal architecture of the Einet."""
         # Build the SPN bottom up:
         # Definition from RAT Paper
         # Leaf Region:      Create I leaf nodes
