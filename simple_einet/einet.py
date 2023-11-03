@@ -292,7 +292,7 @@ class Einet(nn.Module):
         )
 
     @property
-    def _device(self):
+    def __device(self):
         """Small hack to obtain the current device."""
         return next(self.parameters()).device
 
@@ -374,14 +374,14 @@ class Einet(nn.Module):
 
         if is_differentiable:
             indices_out = torch.ones(
-                size=(num_samples, 1, 1), dtype=torch.float, device=self._device, requires_grad=True
+                size=(num_samples, 1, 1), dtype=torch.float, device=self.__device, requires_grad=True
             )
             indices_repetition = torch.ones(
-                size=(num_samples, 1), dtype=torch.float, device=self._device, requires_grad=True
+                size=(num_samples, 1), dtype=torch.float, device=self.__device, requires_grad=True
             )
         else:
-            indices_out = torch.zeros(size=(num_samples, 1), dtype=torch.long, device=self._device)
-            indices_repetition = torch.zeros(size=(num_samples,), dtype=torch.long, device=self._device)
+            indices_out = torch.zeros(size=(num_samples, 1), dtype=torch.long, device=self.__device)
+            indices_repetition = torch.zeros(size=(num_samples,), dtype=torch.long, device=self.__device)
 
         ctx = SamplingContext(
             num_samples=num_samples,
@@ -402,23 +402,23 @@ class Einet(nn.Module):
                     # Construct indices tensor based on given classes
                     if isinstance(class_index, list):
                         # A list of classes was given, one element for each sample
-                        indices = torch.tensor(class_index, device=self._device).view(-1, 1)
+                        indices = torch.tensor(class_index, device=self.__device).view(-1, 1)
                         if is_differentiable:
                             # TODO: Test this
                             # One hot encode
                             indices = torch.zeros(
-                                size=(num_samples, self.config.num_classes, 1), dtype=torch.float, device=self._device
+                                size=(num_samples, self.config.num_classes, 1), dtype=torch.float, device=self.__device
                             ).scatter_(1, indices.unsqueeze(-1), 1)
                             indices.requireds_grad_(True)  # Enable gradients
                         num_samples = indices.shape[0]
                     else:
-                        indices = torch.empty(size=(num_samples, 1), dtype=torch.long, device=self._device)
+                        indices = torch.empty(size=(num_samples, 1), dtype=torch.long, device=self.__device)
                         indices.fill_(class_index)
                         if is_differentiable:
                             # TODO: Test this
                             # One hot encode
                             indices = torch.zeros(
-                                size=(num_samples, self.config.num_classes, 1), dtype=torch.float, device=self._device
+                                size=(num_samples, self.config.num_classes, 1), dtype=torch.float, device=self.__device
                             ).scatter_(1, indices.unsqueeze(-1), 1)
                             indices.requires_grad_(True)  # Enable gradients
 
