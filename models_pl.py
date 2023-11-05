@@ -11,7 +11,8 @@ from rtpt import RTPT
 from torch import nn
 
 from simple_einet.data import get_data_shape, Dist, get_distribution
-from simple_einet.einet import EinetConfig, Einet, EinetMixture
+from simple_einet.einet import EinetConfig, Einet
+from simple_einet.einet_mixture import EinetMixture
 
 # Translate the dataloader index to the dataset name
 DATALOADER_ID_TO_SET_NAME = {0: "train", 1: "val", 2: "test"}

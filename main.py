@@ -20,7 +20,8 @@ import torchvision
 
 from simple_einet.layers.distributions.binomial import Binomial
 from simple_einet.layers.distributions.normal import RatNormal, Normal
-from simple_einet.einet import Einet, EinetConfig, EinetMixture
+from simple_einet.einet import Einet, EinetConfig
+from simple_einet.einet_mixture import EinetMixture
 
 import lightning as L
 

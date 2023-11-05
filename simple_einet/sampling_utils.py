@@ -317,7 +317,8 @@ def init_einet_stats(einet: "Einet", dataloader: torch.utils.data.DataLoader):
     stats_std /= len(dataloader)
 
     from simple_einet.layers.distributions.normal import Normal
-    from simple_einet.einet import Einet, EinetMixture
+    from simple_einet.einet import Einet
+    from simple_einet.einet_mixture import EinetMixture
 
     # Set leaf parameters for normal distribution
     if einet.config.leaf_type == Normal:
