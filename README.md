@@ -4,7 +4,14 @@ This repository contains code for my personal, simplistic, EinsumNetworks implem
 
 For a speed benchmark comparison against the official EinsumNetworks implementation, check out [benchmark.md](./benchmark/benchmark.md) (short: simple-einet is faster in all dimensions except the input-channel size but scales similar to EinsumNetworks).
 
-# PyTorch Lightning Training
+## Notebooks
+
+The `notebooks` folder contains some Jupyter notebooks that demonstrate the usage of this library.
+
+- [Training an Einet on MNIST](./notebooks/mnist.ipynb)
+- [Training an Einet on synthetic multivariate Normal data](./notebooks/multivariate_normal.ipynb)
+
+## PyTorch Lightning Training
 
 The `main_pl.py` script offers PyTorch-Lightning based training for discriminative and generative Einets.
 
