@@ -204,7 +204,7 @@ def sample_categorical_differentiably(
     tau: float,
     logits: torch.Tensor = None,
     log_weights: torch.Tensor = None,
-    method=DiffSampleMethod.SIMPLE,
+    method=DiffSampleMethod.GUMBEL,
 ) -> torch.Tensor:
     """
     Perform differentiable sampling/mpe on the given input along a specific dimension.
