@@ -35,11 +35,11 @@ python main_pl.py dataset=mnist D=3 I=10 R=1 S=10 lr=0.1 dist=binomial epochs=10
 ## Installation
 
 ```shell
-git clone git@github.com:braun-steven/simple-einet.git
-cd simple-einet
-pip install .
+pip install git+https://github.com/braun-steven/simple-einet
 
 # Or if you plan to edit the files after installation:
+git clone git@github.com:braun-steven/simple-einet.git
+cd simple-einet
 pip install -e .
 ```
 
