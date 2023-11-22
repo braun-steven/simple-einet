@@ -9,7 +9,7 @@ with open("requirements.txt", "r", encoding="utf-8") as f:
 setup(
     name="simple-einet",
     version="0.0.1",
-    author="Steven Lang",
+    author="Steven Braun",
     packages=find_packages(include=["simple_einet", "simple_einet.*"]),
     install_requires=required,
     long_description=long_description,
