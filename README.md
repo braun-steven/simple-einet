@@ -1,14 +1,15 @@
-# Simple EinsumNetworks Implementation
+# An EinsumNetworks Implementation
 
-This repository contains code for my personal, simplistic, EinsumNetworks implementation. Well, as it happens with code all the time, the implementation is not as simplistic as it used to be but at least this was the initial intention.
+This repository contains code for my personal EinsumNetworks implementation. 
 
-For a speed benchmark comparison against the official EinsumNetworks implementation, check out [benchmark.md](./benchmark/benchmark.md) (short: simple-einet is faster in all dimensions except the input-channel size but scales similar to EinsumNetworks).
+For a speed benchmark comparison against the official [EinsumNetworks](https://github.com/cambridge-mlg/EinsumNetworks) implementation, check out [benchmark.md](./benchmark/benchmark.md) (TLDR:  simple-einet is faster in all dimensions except the input-channel size in which it scales similar to the official EinsumNetworks implementation).
 
 ## Notebooks
 
-The `notebooks` folder contains some Jupyter notebooks that demonstrate the usage of this library.
+The `notebooks` directory contains Jupyter notebooks that demonstrate the usage of this library.
 
-- [Training an Einet on MNIST](./notebooks/mnist.ipynb)
+- [Training a discriminative Einet the iris dataset](./notebooks/iris_classification.ipynb)
+- [Training a generative Einet on MNIST](./notebooks/mnist.ipynb)
 - [Training an Einet on synthetic multivariate Normal data](./notebooks/multivariate_normal.ipynb)
 
 ## PyTorch Lightning Training
@@ -34,7 +35,9 @@ python main_pl.py dataset=mnist D=3 I=10 R=1 S=10 lr=0.1 dist=binomial epochs=10
 
 ## Installation
 
-```shell
+You can install `simple-einet` as a dependency in your project as follows:
+
+```sh
 pip install git+https://github.com/braun-steven/simple-einet
 
 # Or if you plan to edit the files after installation:
@@ -44,6 +47,8 @@ pip install -e .
 ```
 
 ## Usage Example
+
+The following is a simple usage example of how to create, optimize, and sample from an Einet.
 
 ```python
 import torch
