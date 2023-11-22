@@ -1,2 +1,47 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "simple-einet"
+version = "0.0.1"
+authors = [{name = "Steven Braun", email = "steven.braun.mz@gmail.com"}]
+description = "An efficient PyTorch implementation of EinsumNetworks."
+readme = "README.md"
+license = {file = "LICENSE.md"}  # If you have a LICENSE file
+requires-python = ">=3.9"
+urls = { GitHub = "https://github.com/braun-steven/simple-einet" }
+
+dependencies = [
+    "numpy~=1.26.1",
+    "torch~=2.0",
+    "fast_pytorch_kmeans~=0.2.0"
+]
+
+[project.optional-dependencies]
+# Local development
+dev = [
+  "parameterized~=0.9.0",
+  "pytest",
+]
+
+# For local application in e.g. main.py files
+app = [
+    "matplotlib~=3.8.0",
+    "seaborn~=0.13.0",
+    "omegaconf~=2.3.0",
+    "lightning~=2.0",
+    "Pillow~=10.0",
+    "rtpt~=0.0.4",
+    "scikit_learn~=1.3.0",
+    "torchvision~=0.15",
+    "hydra_colorlog~=1.2.0",
+    "wandb~=0.15.0",
+    "rich~=13.0",
+    "icecream~=2.0",
+    "hydra-core~=1.3.0",
+    "tqdm~=4.0"
+]
+
 [tool.black]
 line-length = 120
