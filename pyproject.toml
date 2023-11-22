@@ -47,5 +47,4 @@ app = [
 line-length = 120
 
 [tool.setuptools]
-packages = find_namespace:
-    include = ["simple_einet"]
+packages = ["simple_einet"]
