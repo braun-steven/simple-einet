@@ -6,7 +6,6 @@ from operator import xor
 import torch
 from torch import nn
 from torch.nn import functional as F
-from tqdm import tqdm
 
 from simple_einet.utils import __HAS_EINSUM_BROADCASTING
 
@@ -303,6 +302,7 @@ def init_einet_stats(einet: "Einet", dataloader: torch.utils.data.DataLoader):
     stats_std = None
 
     # Compute mean and std
+    from tqdm import tqdm
     for batch in tqdm(dataloader, desc="Leaf Parameter Initialization"):
         data, label = batch
         if stats_mean == None:
