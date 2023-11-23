@@ -46,6 +46,12 @@ cd simple-einet
 pip install -e .
 ```
 
+If you want to additionally install the dependencies requires to launch the provided scripts such as `main.py`, `main_pl.py` or the notebooks, run
+
+```
+pip install "git+https://github.com/braun-steven/simple-einet#egg=simple-einet[app]"
+```
+
 ## Usage Example
 
 The following is a simple usage example of how to create, optimize, and sample from an Einet.
