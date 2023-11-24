@@ -40,10 +40,6 @@ You can install `simple-einet` as a dependency in your project as follows:
 ```sh
 pip install git+https://github.com/braun-steven/simple-einet
 
-# Or if you plan to edit the files after installation:
-git clone git@github.com:braun-steven/simple-einet.git
-cd simple-einet
-pip install -e .
 ```
 
 If you want to additionally install the dependencies requires to launch the provided scripts such as `main.py`, `main_pl.py` or the notebooks, run
@@ -51,6 +47,14 @@ If you want to additionally install the dependencies requires to launch the prov
 ```
 pip install "git+https://github.com/braun-steven/simple-einet#egg=simple-einet[app]"
 ```
+
+If you plan to edit the files after installation:
+```
+git clone git@github.com:braun-steven/simple-einet.git
+cd simple-einet
+pip install -e .
+```
+
 
 ## Usage Example
 
