@@ -10,8 +10,6 @@ from simple_einet.layers.distributions.abstract_leaf import AbstractLeaf, dist_m
 from simple_einet.sampling_utils import SamplingContext
 from simple_einet.type_checks import check_valid
 
-from icecream import ic
-
 
 class MultivariateNormal(AbstractLeaf):
     """Multivariate Gaussian layer."""
