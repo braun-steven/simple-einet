@@ -303,6 +303,7 @@ def init_einet_stats(einet: "Einet", dataloader: torch.utils.data.DataLoader):
 
     # Compute mean and std
     from tqdm import tqdm
+
     for batch in tqdm(dataloader, desc="Leaf Parameter Initialization"):
         data, label = batch
         if stats_mean == None:
