@@ -357,15 +357,28 @@ class Einet(nn.Module):
             torch.Tensor: Samples generated according to the distribution specified by the SPN.
 
         """
-        assert class_index is None or evidence is None, "Cannot provide both, evidence and class indices."
-        assert (
-            num_samples is None or evidence is None
-        ), "Cannot provide both, number of samples to generate (num_samples) and evidence."
-        assert ((class_index is not None) and (self.config.num_classes > 1)) or (
-            (class_index is None) and (self.config.num_classes == 1)
-        )
+        class_is_given = class_index is not None
+        evidence_is_given = evidence is not None
+        is_multiclass = self.config.num_classes > 1
 
-        # Check if evidence contains nans
+        assert not (class_is_given and evidence_is_given), "Cannot provide both, evidence and class indices."
+        assert (
+            num_samples is None or not evidence_is_given
+        ), "Cannot provide both, number of samples to generate (num_samples) and evidence."
+
+        if num_samples is not None:
+            assert num_samples > 0, "Number of samples must be > 0."
+
+        # if not is_mpe:
+        #     assert ((class_index is not None) and (self.config.num_classes > 1)) or (
+        #         (class_index is None) and (self.config.num_classes == 1)
+        #     ), "Class index must be given if the number of classes is > 1 or must be none if the number of classes is 1."
+
+        if class_is_given:
+            assert (
+                self.config.num_classes > 1
+            ), f"Class indices are only supported when the number of classes for this model is > 1."
+
         if evidence is not None:
             # Set n to the number of samples in the evidence
             num_samples = evidence.shape[0]
@@ -423,6 +436,9 @@ class Einet(nn.Module):
                             indices.requires_grad_(True)  # Enable gradients
 
                     ctx.indices_out = indices
+                else:
+                    # Sample class
+                    ctx = self._class_sampling_root.sample(ctx=ctx)
 
             # Save parent indices that were sampled from the sampling root
             if self.config.num_repetitions > 1:

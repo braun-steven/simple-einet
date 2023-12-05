@@ -81,14 +81,14 @@ class MixingLayer(AbstractSumLayer):
     def _condition_weights_on_evidence(self, ctx: SamplingContext, log_weights: Tensor):
         lls = self._input_cache["in"]
 
-        # Index repetition
+        # Index lls at correct repetitions
         if ctx.is_differentiable:
-            r_idxs = ctx.indices_repetition.view(ctx.num_samples, 1, 1, 1)
-            lls = index_one_hot(lls, index=r_idxs, dim=2)
+            p_idxs = ctx.indices_out.view(ctx.num_samples, 1, self.num_sums_out, 1)
+            lls = index_one_hot(lls, index=p_idxs, dim=2)
         else:
-            r_idxs = ctx.indices_repetition[..., None, None, None]
-            r_idxs = r_idxs.expand(-1, 1, self.num_sums_out, self.num_sums_in)
-            lls = lls.gather(dim=2, index=r_idxs).squeeze(2)
+            p_idxs = ctx.indices_out[..., None, None]
+            p_idxs = p_idxs.expand(-1, 1, 1, self.num_sums_in)
+            lls = lls.gather(dim=2, index=p_idxs).squeeze(2)
 
         log_prior = log_weights
         log_posterior = log_prior + lls
