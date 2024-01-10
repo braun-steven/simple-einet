@@ -184,6 +184,11 @@ class AbstractLeaf(AbstractLayer, ABC):
         # Marginalization constant
         self.marginalization_constant = nn.Parameter(torch.zeros(1), requires_grad=False)
 
+        # Placeholder to replace nan values for the forward pass to circument errors in the torch distributions
+        # This value is distribution specific since it needs to be inside of the distribution support and might need to
+        # be adjusted
+        self.nan_placeholder = 0
+
     def _apply_dropout(self, x: torch.Tensor) -> torch.Tensor:
         """
         Applies dropout to the input tensor `x` according to the dropout probability
@@ -242,7 +247,17 @@ class AbstractLeaf(AbstractLayer, ABC):
         """
         # Forward through base distribution
         d = self._get_base_distribution()
+        nan_mask = torch.isnan(x)
+        if nan_mask.any():
+            # Replace nans with some valid value
+            x = torch.where(torch.isnan(x), self.nan_placeholder, x)
+
+        # Perform forward pass
         x = dist_forward(d, x)
+
+        # Set back to nan
+        if nan_mask.any():
+            x[nan_mask] = torch.nan
 
         x = self._marginalize_input(x, marginalized_scopes)
 
