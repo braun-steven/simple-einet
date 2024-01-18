@@ -28,7 +28,7 @@ python main_pl.py dataset=mnist batch_size=128 epochs=100 dist=normal D=5 I=32 S
 Generative training on MNIST:
 
 ``` sh
-python main_pl.py dataset=mnist D=3 I=10 R=1 S=10 lr=0.1 dist=binomial epochs=10 batch_size=128
+python main_pl.py dataset=mnist D=5 I=16 R=10 S=16 lr=0.1 dist=binomial epochs=10 batch_size=128
 ```
 
 ![MNIST Samples]( ./res/mnist_samples.png )
