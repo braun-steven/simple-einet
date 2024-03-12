@@ -26,6 +26,7 @@ from torchvision.datasets import (
 )
 
 from simple_einet.layers.distributions.binomial import Binomial
+from simple_einet.layers.distributions.bernoulli import Bernoulli
 from simple_einet.layers.distributions.categorical import Categorical
 from simple_einet.layers.distributions.multivariate_normal import MultivariateNormal
 from simple_einet.layers.distributions.normal import Normal, RatNormal
@@ -525,6 +526,7 @@ class Dist(str, Enum):
     NORMAL_RAT = "normal_rat"
     BINOMIAL = "binomial"
     CATEGORICAL = "categorical"
+    BERNOULLI = "bernoulli"
 
 
 def get_distribution(dist: Dist, cfg):
@@ -554,6 +556,9 @@ def get_distribution(dist: Dist, cfg):
     elif dist == Dist.MULTIVARIATE_NORMAL:
         leaf_type = MultivariateNormal
         leaf_kwargs = {"cardinality": cfg.multivariate_cardinality}
+    elif dist == Dist.BERNOULLI:
+        leaf_type = Bernoulli
+        leaf_kwargs = {}
     else:
         raise ValueError(f"Unknown distribution ({dist}).")
     return leaf_kwargs, leaf_type
