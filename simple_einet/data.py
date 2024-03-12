@@ -1,4 +1,6 @@
 import itertools
+import csv
+import subprocess
 import os
 from dataclasses import dataclass
 from enum import Enum
@@ -66,6 +68,34 @@ def get_data_shape(dataset_name: str) -> Shape:
     """
     if "synth" in dataset_name:
         return Shape(1, 2, 1)
+
+    if "debd" in dataset_name:
+        return Shape(
+            *{
+                "accidents": (1, 111, 1),
+                "ad": (1, 1556, 1),
+                "baudio": (1, 100, 1),
+                "bbc": (1, 1058, 1),
+                "bnetflix": (1, 100, 1),
+                "book": (1, 500, 1),
+                "c20ng": (1, 910, 1),
+                "cr52": (1, 889, 1),
+                "cwebkb": (1, 839, 1),
+                "dna": (1, 180, 1),
+                "jester": (1, 100, 1),
+                "kdd": (1, 64, 1),
+                "kosarek": (1, 190, 1),
+                "moviereview": (1, 1001, 1),
+                "msnbc": (1, 17, 1),
+                "msweb": (1, 294, 1),
+                "nltcs": (1, 16, 1),
+                "plants": (1, 69, 1),
+                "pumsb_star": (1, 163, 1),
+                "tmovie": (1, 500, 1),
+                "tretail": (1, 135, 1),
+                "voting": (1, 1359, 1),
+            }[dataset_name.replace("debd-", "")]
+        )
 
     return Shape(
         *{
@@ -166,6 +196,38 @@ def generate_data(dataset_name: str, n_samples: int = 1000) -> Tuple[torch.Tenso
     return data, labels
 
 
+def maybe_download_debd(data_dir: str):
+    if os.path.isdir(f"{data_dir}/debd"):
+        return
+    subprocess.run(f"git clone https://github.com/arranger1044/DEBD {data_dir}/debd".split())
+    wd = os.getcwd()
+    os.chdir(f"{data_dir}/debd")
+    subprocess.run("git checkout 80a4906dcf3b3463370f904efa42c21e8295e85c".split())
+    subprocess.run("rm -rf .git".split())
+    os.chdir(wd)
+
+
+def load_debd(name, data_dir, dtype="float"):
+    """Load one of the twenty binary density esimtation benchmark datasets."""
+
+    maybe_download_debd(data_dir)
+
+    train_path = os.path.join(data_dir, "debd", "datasets", name, name + ".train.data")
+    test_path = os.path.join(data_dir, "debd", "datasets", name, name + ".test.data")
+    valid_path = os.path.join(data_dir, "debd", "datasets", name, name + ".valid.data")
+
+    reader = csv.reader(open(train_path, "r"), delimiter=",")
+    train_x = np.array(list(reader)).astype(dtype)
+
+    reader = csv.reader(open(test_path, "r"), delimiter=",")
+    test_x = np.array(list(reader)).astype(dtype)
+
+    reader = csv.reader(open(valid_path, "r"), delimiter=",")
+    valid_x = np.array(list(reader)).astype(dtype)
+
+    return train_x, test_x, valid_x
+
+
 def get_datasets(dataset_name, data_dir, normalize: bool) -> Tuple[Dataset, Dataset, Dataset]:
     """
     Get the specified dataset.
@@ -209,6 +271,34 @@ def get_datasets(dataset_name, data_dir, normalize: bool) -> Tuple[Dataset, Data
         # Test
         data, labels = generate_data(dataset_name, n_samples=1000)
         dataset_test = torch.utils.data.TensorDataset(data, labels)
+
+    elif "debd" in dataset_name:
+        # Call load_debd
+        train_x, test_x, valid_x = load_debd(dataset_name.replace("debd-", ""), data_dir)
+        dataset_train = torch.utils.data.TensorDataset(torch.from_numpy(train_x), torch.zeros(train_x.shape[0]))
+        dataset_val = torch.utils.data.TensorDataset(torch.from_numpy(valid_x), torch.zeros(valid_x.shape[0]))
+        dataset_test = torch.utils.data.TensorDataset(torch.from_numpy(test_x), torch.zeros(test_x.shape[0]))
+
+    elif dataset_name == "digits":
+        if normalize:
+            transform.transforms.append(transforms.Normalize([0.5], [0.5]))
+
+        data, labels = datasets.load_digits(return_X_y=True)
+        data, labels = torch.from_numpy(data).float(), torch.from_numpy(labels).long()
+        data[data == 16] = 15
+        # Normalize to [0, 1]
+        data = data / 15
+        dataset_train = torch.utils.data.TensorDataset(data, labels)
+
+        N = data.shape[0]
+        N_train = round(N * 0.7)
+        N_val = round(N * 0.2)
+        N_test = N - N_train - N_val
+        lenghts = [N_train, N_val, N_test]
+
+        dataset_train, dataset_val, dataset_test = random_split(
+            dataset_train, lengths=lenghts, generator=split_generator
+        )
 
     elif dataset_name == "mnist" or dataset_name == "mnist-28":
         if normalize:
