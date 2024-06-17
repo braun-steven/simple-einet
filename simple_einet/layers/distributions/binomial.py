@@ -46,7 +46,9 @@ class Binomial(AbstractLeaf):
         self.total_count = check_valid(total_count, int, lower_bound=1)
 
         # Create binomial parameters as unnormalized log probabilities
-        self.logits = nn.Parameter(torch.randn(1, num_channels, num_features, num_leaves, num_repetitions))
+
+        p = 0.5 + (torch.rand(1, num_channels, num_features, num_leaves, num_repetitions) - 0.5) * 0.2
+        self.logits = nn.Parameter(probs_to_logits(p, is_binary=True))
 
     def _get_base_distribution(self, ctx: SamplingContext = None):
         # Cast logits to probabilities
