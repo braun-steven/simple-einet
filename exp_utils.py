@@ -29,7 +29,6 @@ import numpy as np
 import torch
 from torch.backends import cudnn as cudnn
 from torch.nn.parallel.distributed import DistributedDataParallel
-from torch.utils.tensorboard import SummaryWriter
 from torchvision.transforms import ToTensor
 
 

@@ -91,11 +91,26 @@ class MultiDistributionLayer(AbstractLeaf):
 
     def sample(self, ctx: SamplingContext) -> torch.Tensor:
         all_samples = []
+        indices_out = ctx.indices_out
         for scope, dist in zip(self.scopes, self.dists):
+            if ctx.indices_out is not None:
+                ctx.indices_out = indices_out[:, scope]
             samples = dist.sample(ctx)
             all_samples.append(samples)
 
-        samples = torch.cat(all_samples, dim=2)
+        if ctx.return_leaf_params:
+            # Same code as in get_params() -- TODO: Refactor to reuse code
+            params = all_samples
+            max_num_params = max([p.shape[-1] for p in params])
+            for i, p in enumerate(params):
+                if p.shape[-1] < max_num_params:
+                    # Pad with zeros
+                    new_shape = list(p.shape)
+                    new_shape[-1] = max_num_params - p.shape[-1]
+                    params[i] = torch.cat([p, torch.zeros(new_shape, device=p.device, dtype=p.dtype)], dim=-1)
+            samples = torch.cat(params, dim=2)
+        else:
+            samples = torch.cat(all_samples, dim=2)
 
         # If inversion is necessary, permute features to obtain the original order
         if self.needs_inversion:
@@ -105,3 +120,23 @@ class MultiDistributionLayer(AbstractLeaf):
 
     def _get_base_distribution(self) -> dist.Distribution:
         raise NotImplementedError("MultiDistributionLayer does not implement _get_base_distribution.")
+
+    def get_params(self):
+        """
+        Collect params from all distributions and concatenate them along the feature dimension.
+
+        Note: If the number of parameters of the distributions is not equal, the distributions with fewer parameters
+        are padded with zeros. That is, get_params().shape[-1] should contain the different paramters of the
+        distribution (mu, sigma) for a Normal. In the case of a MultiDistribution of a Bernoulli (a single paramter: p),
+        and a Normal (two parameters: mu, sigma) this will lead to the Bernoulli parameters being padded to (p, 0)
+        in the last dimension.
+        """
+        params = [d.get_params() for d in self.dists]
+        max_num_params = max([p.shape[-1] for p in params])
+        for i, p in enumerate(params):
+            if p.shape[-1] < max_num_params:
+                # Pad with zeros
+                new_shape = list(p.shape)
+                new_shape[-1] = max_num_params - p.shape[-1]
+                params[i] = torch.cat([p, torch.zeros(new_shape, device=p.device, dtype=p.dtype)], dim=-1)
+        return torch.cat(params, dim=2)

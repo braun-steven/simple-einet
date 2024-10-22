@@ -32,10 +32,14 @@ class Normal(AbstractLeaf):
 
         # Create gaussian means and stds
         self.means = nn.Parameter(torch.randn(1, num_channels, num_features, num_leaves, num_repetitions))
-        self.log_stds = nn.Parameter(torch.rand(1, num_channels, num_features, num_leaves, num_repetitions))
+        self.logvar = nn.Parameter(torch.randn(1, num_channels, num_features, num_leaves, num_repetitions))
 
     def _get_base_distribution(self, ctx: SamplingContext = None):
-        return dist.Normal(loc=self.means, scale=self.log_stds.exp())
+        # Use custom normal instead of PyTorch distribution
+        return CustomNormal(mu=self.means, sigma=torch.exp(0.5 * self.logvar))
+
+    def get_params(self):
+        return torch.stack([self.means, self.logvar], dim=-1)
 
 
 class RatNormal(AbstractLeaf):
@@ -88,26 +92,35 @@ class RatNormal(AbstractLeaf):
         self.max_mean = check_valid(max_mean, float, min_mean, allow_none=True)
 
     def _get_base_distribution(self, ctx: SamplingContext = None) -> "CustomNormal":
-        if self.min_sigma < self.max_sigma:
-            sigma_ratio = torch.sigmoid(self.stds)
-            sigma = self.min_sigma + (self.max_sigma - self.min_sigma) * sigma_ratio
-        else:
-            sigma = 1.0
-
-        means = self.means
-        if self.max_mean:
-            assert self.min_mean is not None
-            mean_range = self.max_mean - self.min_mean
-            means = torch.sigmoid(self.means) * mean_range + self.min_mean
+        means, sigma = self._project_params()
 
         # d = dist.Normal(means, sigma)
         d = CustomNormal(means, sigma)
         return d
 
+    def _project_params(self):
+        if self.min_sigma < self.max_sigma:
+            sigma_ratio = torch.sigmoid(self.stds)
+            sigma = self.min_sigma + (self.max_sigma - self.min_sigma) * sigma_ratio
+        else:
+            sigma = 1.0
+        means = self.means
+        if self.max_mean:
+            assert self.min_mean is not None
+            mean_range = self.max_mean - self.min_mean
+            means = torch.sigmoid(self.means) * mean_range + self.min_mean
+        return means, sigma
+
+    def get_params(self):
+        means, sigma = self._project_params()
+        return torch.stack([means, sigma], dim=-1)
+
 
 class CustomNormal:
     """
     A custom implementation of the Normal distribution.
+
+    Sampling from this distribution is differentiable.
 
     This class allows to sample from a Normal distribution with mean `mu` and standard deviation `sigma`.
     The `sample` method returns a tensor of samples from the distribution, with shape `sample_shape + mu.shape`.
@@ -160,3 +173,6 @@ class CustomNormal:
             torch.Tensor: The log probability density of the normal distribution at the given value(s).
         """
         return dist.Normal(self.mu, self.sigma).log_prob(x)
+
+    def get_params(self):
+        return torch.stack([self.mu, self.sigma.log() * 2], dim=-1)

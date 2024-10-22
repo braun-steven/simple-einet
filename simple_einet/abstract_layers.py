@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import Tuple
+import numpy as np
 
 import torch
 from torch import nn, Tensor
@@ -7,6 +8,7 @@ from torch import nn, Tensor
 from simple_einet.sampling_utils import SamplingContext
 from simple_einet.type_checks import check_valid
 from torch.nn import functional as F
+
 
 
 class AbstractLayer(nn.Module, ABC):
@@ -54,6 +56,48 @@ def logits_to_log_weights(logits: torch.Tensor, dim: int, temperature: float = 1
     return F.log_softmax(logits / temperature, dim=dim)
 
 
+class ConditioningNetwork(nn.Module):
+    def __init__(self, num_features_out: int, num_sums_in: int, num_hidden: int):
+        super().__init__()
+        input_size = num_features_out * num_sums_in
+        self.input_size = input_size
+        self.num_features_out = num_features_out
+        self.num_sums_in = num_sums_in
+        self.num_hidden = num_hidden
+
+        layers = [nn.Linear(input_size, input_size // 2), nn.SiLU()]
+
+        # Construct dims
+        dims = []
+
+        for i in range(1, num_hidden // 2 + 1):
+            dims.append(input_size // 2**i)
+
+        for i in range(num_hidden // 2 + 1, 0, -1):
+            dims.append(input_size // 2**i)
+
+        for i in range(len(dims) - 1):
+            layers.append(nn.Linear(dims[i], dims[i + 1]))
+            layers.append(nn.SiLU())
+
+        layers += [nn.Linear(input_size // 2, input_size)]
+        # layers += [nn.Linear(input_size // 4, input_size // 2)]
+
+        self._net = nn.Sequential(
+            *layers,
+        )
+
+    def forward(self, log_prior: torch.Tensor, lls: torch.Tensor):
+        # x = torch.cat([log_prior, lls], dim=1).view(-1, self.input_size)
+        x = log_prior + lls
+        x = x - torch.logsumexp(x, dim=2, keepdim=True)
+        x = x.view(-1, self.input_size)
+        out = self._net(x)
+        out = out.view(-1, self.num_features_out, self.num_sums_in)
+        log_posterior = F.log_softmax(out, dim=2)
+        return log_posterior
+
+
 class AbstractSumLayer(AbstractLayer):
     """
     This is the abstract base class for all kinds of sum layers in the circuit.
@@ -75,7 +119,12 @@ class AbstractSumLayer(AbstractLayer):
     """
 
     def __init__(
-        self, num_features: int, num_sums_in: int, num_sums_out: int, num_repetitions: int, dropout: float = 0.0
+        self,
+        num_features: int,
+        num_sums_in: int,
+        num_sums_out: int,
+        num_repetitions: int,
+        dropout: float = 0.0,
     ):
         super().__init__(num_features=num_features, num_repetitions=num_repetitions)
         self.num_sums_in = check_valid(num_sums_in, int, 1)

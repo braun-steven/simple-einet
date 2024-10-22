@@ -1,5 +1,4 @@
 import torch
-from torch.distributions.utils import probs_to_logits
 from torch import distributions as dist
 from torch import nn
 from torch.nn import functional as F
@@ -28,9 +27,11 @@ class Categorical(AbstractLeaf):
         super().__init__(num_features, num_channels, num_leaves, num_repetitions)
 
         # Create logits
-        p = 0.5 + (torch.rand(1, num_channels, num_features, num_leaves, num_repetitions, num_bins) - 0.5) * 0.2
-        self.logits = nn.Parameter(probs_to_logits(p))
+        self.logits = nn.Parameter(torch.randn(1, num_channels, num_features, num_leaves, num_repetitions, num_bins))
 
     def _get_base_distribution(self, ctx: SamplingContext = None):
         # Use sigmoid to ensure, that probs are in valid range
         return dist.Categorical(logits=F.log_softmax(self.logits, dim=-1))
+
+    def get_params(self):
+        return self.logits

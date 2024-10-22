@@ -1,6 +1,6 @@
 from _operator import xor
 from collections import defaultdict
-from typing import Sequence, List
+from typing import List, Optional, Sequence
 
 import torch
 from fast_pytorch_kmeans import KMeans
@@ -49,7 +49,7 @@ class EinetMixture(nn.Module):
 
         self.centroids.data = self._kmeans.centroids
 
-    def _predict_cluster(self, x, marginalized_scopes: List[int] = None):
+    def _predict_cluster(self, x, marginalized_scopes: Optional[List[int]] = None):
         x = x.view(x.shape[0], -1)  # input needs to be [n, d]
         if marginalized_scopes is not None:
             keep_idx = list(sorted([i for i in range(self.config.num_features) if i not in marginalized_scopes]))

@@ -2,7 +2,7 @@ import argparse
 import os
 import pathlib
 
-from simple_einet.data import Dist
+from simple_einet.dist import Dist
 
 
 def parse_args():

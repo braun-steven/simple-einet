@@ -10,6 +10,8 @@ from simple_einet.layers.distributions.abstract_leaf import AbstractLeaf, dist_m
 from simple_einet.sampling_utils import SamplingContext
 from simple_einet.type_checks import check_valid
 
+from icecream import ic
+
 
 class MultivariateNormal(AbstractLeaf):
     """Multivariate Gaussian layer."""
@@ -62,11 +64,10 @@ class MultivariateNormal(AbstractLeaf):
         L_full = torch.diag_embed(L_diag) + L_offdiag  # Construct full lower triangular matrix
         return L_full
 
-    def _get_base_distribution(self, ctx: SamplingContext = None, marginalized_scopes = None):
+    def _get_base_distribution(self, ctx: SamplingContext = None, marginalized_scopes=None):
         # View means and scale_tril
         means = self.means.view(self._num_dists, self.cardinality)
         scale_tril = self.scale_tril.view(self._num_dists, self.cardinality, self.cardinality)
-
 
         mv = CustomMultivariateNormalDist(
             mean=means,
@@ -187,5 +188,3 @@ class CustomMultivariateNormalDist:
             num_samples, self.num_channels, self.num_features, self.num_leaves, self.num_repetitions
         )
         return samples
-
-

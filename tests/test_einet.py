@@ -5,14 +5,11 @@ from simple_einet.einet import Einet, EinetConfig
 import torch
 from parameterized import parameterized
 
-from simple_einet.abstract_layers import logits_to_log_weights
 from simple_einet.layers.distributions.binomial import Binomial
-from simple_einet.layers.linsum import LinsumLayer
-from simple_einet.sampling_utils import index_one_hot
 
 
 class TestEinet(TestCase):
-    def make_einet(self, num_classes, num_repetitions):
+    def make_einet(self, num_classes, num_repetitions, structure, layer_type):
         config = EinetConfig(
             num_features=self.num_features,
             num_channels=self.num_channels,
@@ -23,23 +20,24 @@ class TestEinet(TestCase):
             num_classes=num_classes,
             leaf_type=self.leaf_type,
             leaf_kwargs=self.leaf_kwargs,
-            layer_type="linsum",
+            layer_type=layer_type,
+            structure=structure,
             dropout=0.0,
         )
         return Einet(config)
 
     def setUp(self) -> None:
-        self.num_features = 8
+        self.num_features = 30
         self.num_channels = 3
         self.num_sums = 5
-        self.num_leaves = 2
+        self.num_leaves = 7
         self.depth = 3
         self.leaf_type = Binomial
         self.leaf_kwargs = {"total_count": 255}
 
-    @parameterized.expand(product([False, True], [1, 3], [1, 4]))
-    def test_sampling_shapes(self, differentiable: bool, num_classes: int, num_repetitions: int):
-        model = self.make_einet(num_classes=num_classes, num_repetitions=num_repetitions)
+    @parameterized.expand(product([False, True], [1, 3], [1, 4], ["original", "bottom_up"], ["linsum"]))
+    def test_sampling_shapes(self, differentiable: bool, num_classes: int, num_repetitions: int, structure: str, layer_type: str):
+        model = self.make_einet(num_classes=num_classes, num_repetitions=num_repetitions, structure=structure, layer_type=layer_type)
         N = 2
 
         # Sample without evidence
@@ -51,9 +49,9 @@ class TestEinet(TestCase):
         samples = model.sample(evidence=evidence, is_differentiable=differentiable)
         self.assertEqual(samples.shape, (N, self.num_channels, self.num_features))
 
-    @parameterized.expand(product([False, True], [1, 3], [1, 4]))
-    def test_mpe_shapes(self, differentiable: bool, num_classes: int, num_repetitions: int):
-        model = self.make_einet(num_classes=num_classes, num_repetitions=num_repetitions)
+    @parameterized.expand(product([False, True], [1, 3], [1, 4], ["original", "bottom_up"], ["linsum"]))
+    def test_mpe_shapes(self, differentiable: bool, num_classes: int, num_repetitions: int, structure: str, layer_type: str):
+        model = self.make_einet(num_classes=num_classes, num_repetitions=num_repetitions, structure=structure, layer_type=layer_type)
         N = 2
 
         # MPE without evidence

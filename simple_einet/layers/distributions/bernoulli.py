@@ -1,5 +1,4 @@
 import torch
-from simple_einet.sampling_utils import SamplingContext
 from torch import distributions as dist
 from torch import nn
 
@@ -27,6 +26,6 @@ class Bernoulli(AbstractLeaf):
         # Create bernoulli parameters
         self.probs = nn.Parameter(torch.randn(1, num_channels, num_features, num_leaves, num_repetitions))
 
-    def _get_base_distribution(self, ctx: SamplingContext = None):
+    def _get_base_distribution(self):
         # Use sigmoid to ensure, that probs are in valid range
         return dist.Bernoulli(probs=torch.sigmoid(self.probs))

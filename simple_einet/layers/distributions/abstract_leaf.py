@@ -32,7 +32,7 @@ def dist_forward(distribution, x: torch.Tensor):
 
     # Compute log-likelihodd
     try:
-        x = distribution.log_prob(x)  # Shape: [n, d, oc, r]
+        x = distribution.log_prob(x)  # Shape: [n, c, d, oc, r]
     except ValueError as e:
         print("min:", x.min())
         print("max:", x.max())
@@ -63,6 +63,7 @@ def dist_mode(distribution: dist.Distribution, ctx: SamplingContext = None) -> t
 
     from simple_einet.layers.distributions.normal import CustomNormal
     from simple_einet.layers.distributions.binomial import DifferentiableBinomial
+    from simple_einet.layers.distributions.piecewise_linear import PiecewiseLinearDist
 
     if isinstance(distribution, CustomNormal):
         # Repeat the mode along the batch axis
@@ -84,6 +85,8 @@ def dist_mode(distribution: dist.Distribution, ctx: SamplingContext = None) -> t
         probs = distribution.probs.clone()
         mode = torch.argmax(probs, dim=-1)
         return mode.repeat(ctx.num_samples, 1, 1, 1, 1)
+    elif isinstance(distribution, PiecewiseLinearDist):
+        return distribution.mpe(num_samples=ctx.num_samples)
     else:
         raise Exception(f"MPE not yet implemented for type {type(distribution)}")
 
@@ -101,43 +104,64 @@ def dist_sample(distribution: dist.Distribution, ctx: SamplingContext = None) ->
     """
 
     # Sample from the specified distribution
-    if ctx.is_mpe or ctx.mpe_at_leaves:
+    if (ctx.is_mpe or ctx.mpe_at_leaves) and not ctx.return_leaf_params:
         samples = dist_mode(distribution, ctx).float()
         samples = samples.unsqueeze(1)
+
+        # Add empty last dim to make this the same dim as params
+        samples = samples.unsqueeze(-1)
     else:
         from simple_einet.layers.distributions.normal import CustomNormal
 
-        if type(distribution) == dist.Normal:
-            distribution = dist.Normal(loc=distribution.loc, scale=distribution.scale / ctx.temperature_leaves)
-        elif type(distribution) == CustomNormal:
-            distribution = CustomNormal(mu=distribution.mu, sigma=distribution.sigma / ctx.temperature_leaves)
-        elif type(distribution) == dist.Categorical:
-            distribution = dist.Categorical(logits=F.log_softmax(distribution.logits / ctx.temperature_leaves))
-        samples = distribution.sample(sample_shape=(ctx.num_samples,)).float()
+        if ctx.return_leaf_params:
+            samples = distribution.get_params()
+
+            # Add batch dimension
+            samples = samples.unsqueeze(0)
+        else:
+            if type(distribution) == dist.Normal:
+                distribution = dist.Normal(loc=distribution.loc, scale=distribution.scale / ctx.temperature_leaves)
+            elif type(distribution) == CustomNormal:
+                distribution = CustomNormal(mu=distribution.mu, sigma=distribution.sigma / ctx.temperature_leaves)
+            elif type(distribution) == dist.Categorical:
+                distribution = dist.Categorical(logits=F.log_softmax(distribution.probs / ctx.temperature_leaves))
+
+            samples = distribution.sample(sample_shape=(ctx.num_samples,)).float()
+
+            # Add empty last dim to make this the same dim as params
+            samples = samples.unsqueeze(-1)
 
     assert (
         samples.shape[1] == 1
     ), "Something went wrong. First sample size dimension should be size 1 due to the distribution parameter dimensions. Please report this issue."
 
-    # if not context.is_differentiable:  # This happens only in the non-differentiable context
-    samples.squeeze_(1)
-    num_samples, num_channels, num_features, num_leaves, num_repetitions = samples.shape
+    samples = samples.squeeze(1)
+    _, num_channels, num_features, num_leaves, num_repetitions, num_params = samples.shape
 
     if ctx.is_differentiable:
-        r_idxs = ctx.indices_repetition.view(num_samples, 1, 1, 1, num_repetitions)
-        samples = index_one_hot(samples, index=r_idxs, dim=-1)
+        r_idxs = ctx.indices_repetition.view(-1, 1, 1, 1, num_repetitions, 1)
+        samples = index_one_hot(samples, index=r_idxs, dim=-2)
     else:
-        r_idxs = ctx.indices_repetition.view(-1, 1, 1, 1, 1)
-        r_idxs = r_idxs.expand(-1, num_channels, num_features, num_leaves, -1)
-        samples = samples.gather(dim=-1, index=r_idxs)
-        samples = samples.squeeze(-1)
+        r_idxs = ctx.indices_repetition.view(-1, 1, 1, 1, 1, 1)
+        r_idxs = r_idxs.expand(-1, num_channels, num_features, num_leaves, -1, -1)
+        samples = samples.gather(dim=-2, index=r_idxs)
+        samples = samples.squeeze(-2)
 
     # If parent index into out_channels are given
     if ctx.indices_out is not None:
-        # Choose only specific samples for each feature/scope
-        samples = torch.gather(samples, dim=2, index=ctx.indices_out.unsqueeze(-1)).squeeze(-1)
+        if ctx.is_differentiable:
+            p_idxs = ctx.indices_out.unsqueeze(1).unsqueeze(-1)
+            samples = index_one_hot(samples, index=p_idxs, dim=3)
+        else:
+            # Choose only specific samples for each feature/scope
+            p_idxs = ctx.indices_out.view(-1, 1, num_features, 1, 1)
+            p_idxs = p_idxs.expand(-1, num_channels, -1, -1, -1)
+            samples = samples.gather(dim=3, index=p_idxs).squeeze(-1)
 
-    return samples
+    if ctx.return_leaf_params:
+        return samples
+    else:
+        return samples.squeeze(-1)
 
 
 class AbstractLeaf(AbstractLayer, ABC):
@@ -232,6 +256,10 @@ class AbstractLeaf(AbstractLayer, ABC):
                 s = marginalized_scopes.div(self.cardinality, rounding_mode="floor")
 
             x[:, :, s] = self.marginalization_constant
+        else:
+            if torch.any(mask := torch.isnan(x)):
+                x[mask] = self.marginalization_constant
+
         return x
 
     def forward(self, x, marginalized_scopes: List[int]):
@@ -284,3 +312,13 @@ class AbstractLeaf(AbstractLayer, ABC):
 
     def extra_repr(self):
         return f"num_features={self.num_features}, num_leaves={self.num_leaves}, out_shape={self.out_shape}"
+
+    def get_params(self):
+        """
+        Obtain the parameters of this distribution.
+
+        If the distribution consists of multiple parameters (such as the Normal distribution), the parameters are
+        stacked in the last dimension. That is, get_params().shape[-1] should indicate the number of parameters this
+        distribution has (Binomial=1, Normal=2, ...).
+        """
+        raise NotImplementedError("This method should be implemented by the child class.")

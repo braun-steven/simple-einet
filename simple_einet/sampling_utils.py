@@ -6,6 +6,7 @@ from operator import xor
 import torch
 from torch import nn
 from torch.nn import functional as F
+from tqdm import tqdm
 
 from simple_einet.utils import __HAS_EINSUM_BROADCASTING
 
@@ -109,11 +110,17 @@ class SamplingContext:
     # Do MPE at leaves
     mpe_at_leaves: bool = False
 
+    # Return leaf distribution instead of samples
+    return_leaf_params: bool = False
+
     def __setattr__(self, key, value):
         if hasattr(self, key):
             super().__setattr__(key, value)
         else:
             raise AttributeError(f"SamplingContext object has no attribute {key}")
+
+    def __repr__(self) -> str:
+        return f"SamplingContext(num_samples={self.num_samples}, indices_out={self.indices_out.shape}, indices_repetition={self.indices_repetition.shape}, is_mpe={self.is_mpe}, temperature_leaves={self.temperature_leaves}, temperature_sums={self.temperature_sums}, num_repetitions={self.num_repetitions}, evidence={self.evidence.shape if self.evidence else None}, is_differentiable={self.is_differentiable}, hard={self.hard}, tau={self.tau}, mpe_at_leaves={self.mpe_at_leaves}, return_leaf_params={self.return_leaf_params})"
 
 
 def get_context(differentiable):
@@ -203,7 +210,7 @@ def sample_categorical_differentiably(
     tau: float,
     logits: torch.Tensor = None,
     log_weights: torch.Tensor = None,
-    method=DiffSampleMethod.GUMBEL,
+    method=DiffSampleMethod.SIMPLE,
 ) -> torch.Tensor:
     """
     Perform differentiable sampling/mpe on the given input along a specific dimension.
@@ -299,23 +306,21 @@ def init_einet_stats(einet: "Einet", dataloader: torch.utils.data.DataLoader):
     Returns: None
     """
     stats_mean = None
-    stats_std = None
+    stats_var = None
 
     # Compute mean and std
-    from tqdm import tqdm
-
     for batch in tqdm(dataloader, desc="Leaf Parameter Initialization"):
         data, label = batch
         if stats_mean == None:
             stats_mean = data.mean(dim=0)
-            stats_std = data.std(dim=0)
+            stats_var = data.var(dim=0)
         else:
             stats_mean += data.mean(dim=0)
-            stats_std += data.std(dim=0)
+            stats_var += data.var(dim=0)
 
     # Normalize
     stats_mean /= len(dataloader)
-    stats_std /= len(dataloader)
+    stats_var /= len(dataloader)
 
     from simple_einet.layers.distributions.normal import Normal
     from simple_einet.einet import Einet
@@ -336,10 +341,10 @@ def init_einet_stats(einet: "Einet", dataloader: torch.utils.data.DataLoader):
             .repeat(1, einets[0].config.num_leaves, einets[0].config.num_repetitions)
             .view_as(einets[0].leaf.base_leaf.means)
         )
-        stats_std_v = (
-            stats_std.view(-1, 1, 1)
+        stats_var_v = (
+            stats_var.view(-1, 1, 1)
             .repeat(1, einets[0].config.num_leaves, einets[0].config.num_repetitions)
-            .view_as(einets[0].leaf.base_leaf.log_stds)
+            .view_as(einets[0].leaf.base_leaf.logvar)
         )
 
         # Set leaf parameters
@@ -348,8 +353,8 @@ def init_einet_stats(einet: "Einet", dataloader: torch.utils.data.DataLoader):
             net.leaf.base_leaf.means.data = stats_mean_v + 0.1 * torch.normal(
                 torch.zeros_like(stats_mean_v), torch.std(stats_mean_v)
             )
-            net.leaf.base_leaf.log_stds.data = torch.log(
-                stats_std_v
+            net.leaf.base_leaf.logvar.data = torch.log(
+                stats_var_v
                 + 1e-3
-                + torch.clamp(0.1 * torch.normal(torch.zeros_like(stats_std_v), torch.std(stats_std_v)), min=0.0)
+                + torch.clamp(0.1 * torch.normal(torch.zeros_like(stats_var_v), torch.std(stats_var_v)), min=0.0)
             )

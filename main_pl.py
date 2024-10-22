@@ -25,7 +25,7 @@ from exp_utils import (
     plot_distribution,
 )
 from models_pl import SpnDiscriminative, SpnGenerative
-from simple_einet.data import Dist
+from simple_einet.dist import Dist
 from simple_einet.data import build_dataloader
 from simple_einet.sampling_utils import init_einet_stats
 
@@ -161,7 +161,7 @@ def main(cfg: DictConfig):
         profiler=cfg.profiler,
         default_root_dir=run_dir,
         enable_checkpointing=False,
-        detect_anomaly=True,
+        detect_anomaly=cfg.debug,
     )
 
     if not cfg.load_and_eval:

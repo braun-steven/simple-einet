@@ -10,7 +10,8 @@ from omegaconf import DictConfig
 from rtpt import RTPT
 from torch import nn
 
-from simple_einet.data import get_data_shape, Dist, get_distribution
+from simple_einet.data import get_data_shape
+from simple_einet.dist import Dist, get_distribution
 from simple_einet.einet import EinetConfig, Einet
 from simple_einet.einet_mixture import EinetMixture
 

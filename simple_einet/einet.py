@@ -1,6 +1,7 @@
 import logging
+from simple_einet.utils import invert_permutation
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Type, Union
+from typing import Any, Dict, List, Type, Union, Optional
 
 import numpy as np
 import torch
@@ -11,9 +12,10 @@ from simple_einet.layers.einsum import (
     EinsumLayer,
 )
 from simple_einet.layers.mixing import MixingLayer
-from simple_einet.layers.factorized_leaf import FactorizedLeaf
-from simple_einet.layers.linsum import LinsumLayer
-from simple_einet.sampling_utils import sampling_context, SamplingContext
+from simple_einet.layers.factorized_leaf import FactorizedLeaf, FactorizedLeafSimple
+from simple_einet.layers.linsum import LinsumLayer, LinsumLayer2
+from simple_einet.layers.product import RootProductLayer
+from simple_einet.sampling_utils import index_one_hot, sampling_context, SamplingContext
 from simple_einet.layers.sum import SumLayer
 from simple_einet.type_checks import check_valid
 
@@ -35,6 +37,7 @@ class EinetConfig:
     leaf_type: Type = None  # Type of the leaf base class (Normal, Bernoulli, etc)
     leaf_kwargs: Dict[str, Any] = field(default_factory=dict)  # Parameters for the leaf base class
     layer_type: str = "linsum"  # Indicates the intermediate layer type: linsum or einsum
+    structure: str = "original"  # Structure of the Einet: original or bottom_up
 
     def assert_valid(self):
         """Check whether the configuration is valid."""
@@ -49,6 +52,15 @@ class EinetConfig:
         check_valid(self.num_leaves, int, 1)
         check_valid(self.dropout, float, 0.0, 1.0, allow_none=True)
         assert self.leaf_type is not None, "EinetConfig.leaf_type parameter was not set!"
+        assert self.layer_type in [
+            "linsum",
+            "linsum2",
+            "einsum",
+        ], f"Invalid layer type {self.layer_type}. Must be 'linsum' or 'einsum'."
+        assert self.structure in [
+            "original",
+            "bottom_up",
+        ], f"Invalid structure type {self.structure}. Must be 'original' or 'bottom_up'."
 
         assert isinstance(self.leaf_type, type) and issubclass(
             self.leaf_type, AbstractLeaf
@@ -59,6 +71,9 @@ class EinetConfig:
             cardinality = self.leaf_kwargs["cardinality"]
         else:
             cardinality = 1
+
+        if self.structure == "bottom_up":
+            assert self.layer_type == "linsum", "Bottom-up structure only supports LinsumLayer due to handling of padding (not implemented for einsumlayer yet)."
 
         # Get minimum number of features present at the lowest layer (num_features is the actual input dimension,
         # cardinality in multivariate distributions reduces this dimension since it merges groups of size #cardinality)
@@ -79,7 +94,7 @@ class Einet(nn.Module):
 
     def __init__(self, config: EinetConfig):
         """
-        Create a Einet based on a configuration object.
+        Create an Einet based on a configuration object.
 
         Args:
             config (EinetConfig): Einet configuration object.
@@ -89,15 +104,28 @@ class Einet(nn.Module):
         self.config = config
 
         # Construct the architecture
-        self._build()
+        if self.config.structure == "original":
+            self._build_structure_original()
+        elif self.config.structure == "bottom_up":
+            self._build_structure_bottom_up()
+        else:
+            raise ValueError(f"Invalid structure type {self.config.structure}. Must be 'original' or 'bottom_up'.")
 
-    def forward(self, x: torch.Tensor, marginalized_scopes: torch.Tensor = None) -> torch.Tensor:
+        # Leaf cache
+        self._leaf_cache = {}
+
+    def reset_cache(self):
+        """Reset the leaf cache."""
+        self._leaf_cache = {}
+
+    def forward(self, x: torch.Tensor, marginalized_scopes: torch.Tensor = None, cache_index: Optional[int] = None) -> torch.Tensor:
         """
         Inference pass for the Einet model.
 
         Args:
-          x (torch.Tensor): Input data of shape [N, C, D], where C is the number of input channels (useful for images) and D is the number of features/random variables (H*W for images).
-          marginalized_scopes: torch.Tensor:  (Default value = None)
+            x (torch.Tensor): Input data of shape [N, C, D], where C is the number of input channels (useful for images) and D is the number of features/random variables (H*W for images).
+            marginalized_scopes (torch.Tensor):  (Default value = None)
+            cache_index (Optional[int]): Index of the cache. If not None, the leaf tries to retrieve the cached log-likelihoods or computes the log-likelihoods on a cache-miss and then caches the results. (Default value = None)
 
         Returns:
             Log-likelihood tensor of the input: p(X) or p(X | C) if number of classes > 1.
@@ -115,11 +143,41 @@ class Einet(nn.Module):
             x.shape[1] == self.config.num_channels
         ), f"Number of channels in input ({x.shape[1]}) does not match number of channels specified in config ({self.config.num_channels})."
         assert (
-                x.shape[2] == self.config.num_features
+            x.shape[2] == self.config.num_features
         ), f"Number of features in input ({x.shape[0]}) does not match number of features specified in config ({self.config.num_features})."
 
         # Apply leaf distributions (replace marginalization indicators with 0.0 first)
-        x = self.leaf(x, marginalized_scopes)
+        # If cache_index is set, try to retrieve the cached leaf log-likelihoods
+        if cache_index is not None and cache_index in self._leaf_cache:
+            x = self._leaf_cache[cache_index]
+        else:
+            x = self.leaf(x, marginalized_scopes)
+
+            if cache_index is not None:  # Cache index was specified but not found in cache
+                self._leaf_cache[cache_index] = x
+
+
+        # Factorize input channels
+        if not isinstance(self.leaf, (FactorizedLeaf, FactorizedLeafSimple)):
+            x = x.sum(dim=1)
+            assert x.shape == (
+                x.shape[0],
+                self.config.num_features,
+                self.config.num_leaves,
+                self.config.num_repetitions,
+            ), f"Invalid shape after leaf layer. Was {x.shape} but expected ({x.shape[0]}, {self.config.num_features}, {self.config.num_leaves}, {self.config.num_repetitions})."
+        else:
+            assert x.shape == (
+                x.shape[0],
+                self.leaf.num_features_out,
+                self.config.num_leaves,
+                self.config.num_repetitions,
+            ), f"Invalid shape after leaf layer. Was {x.shape} but expected ({x.shape[0]}, {self.leaf.num_features_out}, {self.config.num_leaves}, {self.config.num_repetitions})."
+
+        # Apply permutation
+        if hasattr(self, "permutation"):
+            for i in range(self.config.num_repetitions):
+                x[:, :, :, i] = x[:, self.permutation[i], :, i]
 
         # Pass through intermediate layers
         x = self._forward_layers(x)
@@ -177,7 +235,7 @@ class Einet(nn.Module):
 
         return posterior(ll_x_g_y, self.config.num_classes)
 
-    def _build(self):
+    def _build_structure_original(self):
         """Construct the internal architecture of the Einet."""
         # Build the SPN bottom up:
         # Definition from RAT Paper
@@ -186,7 +244,7 @@ class Einet(nn.Module):
         # Internal Region:  Create S sum nodes
         # Partition:        Cross products of all child-regions
 
-        intermediate_layers: List[Union[EinsumLayer, LinsumLayer]] = []
+        intermediate_layers: List[Union[EinsumLayer, LinsumLayer, LinsumLayer2]] = []
 
         # Construct layers from top to bottom
         for i in np.arange(start=1, stop=self.config.depth + 1):
@@ -226,6 +284,14 @@ class Einet(nn.Module):
                     num_repetitions=self.config.num_repetitions,
                     dropout=self.config.dropout,
                 )
+            elif self.config.layer_type == "linsum2":
+                layer = LinsumLayer2(
+                    num_features=in_features,
+                    num_sums_in=_num_sums_in,
+                    num_sums_out=_num_sums_out,
+                    num_repetitions=self.config.num_repetitions,
+                    dropout=self.config.dropout,
+                )
             else:
                 raise ValueError(f"Unknown layer type {self.config.layer_type}")
 
@@ -247,7 +313,7 @@ class Einet(nn.Module):
         self.leaf = self._build_input_distribution(num_features_out=leaf_num_features_out)
 
         # List layers in a bottom-to-top fashion
-        self.layers: List[Union[EinsumLayer, LinsumLayer]] = nn.ModuleList(reversed(intermediate_layers))
+        self.layers: List[Union[EinsumLayer, LinsumLayer, LinsumLayer2]] = nn.ModuleList(reversed(intermediate_layers))
 
         # If model has multiple reptitions, add repetition mixing layer
         if self.config.num_repetitions > 1:
@@ -273,7 +339,151 @@ class Einet(nn.Module):
                 requires_grad=False,
             )
 
-    def _build_input_distribution(self, num_features_out: int):
+    def _build_structure_bottom_up(self):
+        """Construct the internal architecture of the Einet."""
+        # Build the SPN bottom up:
+        # Definition from RAT Paper
+        # Leaf Region:      Create I leaf nodes
+        # Root Region:      Create C sum nodes
+        # Internal Region:  Create S sum nodes
+        # Partition:        Cross products of all child-regions
+
+        intermediate_layers: List[Union[EinsumLayer, LinsumLayer, LinsumLayer2]] = []
+
+        # Construct layers from bottom to top
+        in_features = self.config.num_features
+        for i in np.arange(start=0, stop=self.config.depth):
+            # Choose number of input sum nodes
+            # - if this is an intermediate layer, use the number of sum nodes from the previous layer
+            # - if this is the first layer, use the number of leaves as the leaf layer is below the first sum layer
+            if i == 0:
+                _num_sums_in = self.config.num_leaves
+            else:
+                _num_sums_in = self.config.num_sums
+
+            # Choose number of output sum nodes
+            # - if this is the last layer, use the number of classes
+            # - otherwise use the number of sum nodes from the next layer
+
+            # if i == self.config.depth - 1:
+            #     _num_sums_out = self.config.num_classes
+            # else:
+            #     _num_sums_out = self.config.num_sums
+            _num_sums_out = self.config.num_sums
+
+            if self.config.layer_type == "einsum":
+                layer = EinsumLayer(
+                    num_features=in_features,
+                    num_sums_in=_num_sums_in,
+                    num_sums_out=_num_sums_out,
+                    num_repetitions=self.config.num_repetitions,
+                    dropout=self.config.dropout,
+                )
+            elif self.config.layer_type == "linsum":
+                layer = LinsumLayer(
+                    num_features=in_features,
+                    num_sums_in=_num_sums_in,
+                    num_sums_out=_num_sums_out,
+                    num_repetitions=self.config.num_repetitions,
+                    dropout=self.config.dropout,
+                )
+            elif self.config.layer_type == "linsum2":
+                layer = LinsumLayer2(
+                    num_features=in_features,
+                    num_sums_in=_num_sums_in,
+                    num_sums_out=_num_sums_out,
+                    num_repetitions=self.config.num_repetitions,
+                    dropout=self.config.dropout,
+                )
+            else:
+                raise ValueError(f"Unknown layer type {self.config.layer_type}")
+
+            # Update number of input features: each layer merges two partitions
+            in_features = layer.num_features_out
+
+            intermediate_layers.append(layer)
+
+        if self.config.depth == 0:
+            # Create a single sum layer
+            layer = SumLayer(
+                num_sums_in=self.config.num_leaves,
+                num_features=1,
+                num_sums_out=self.config.num_classes,
+                num_repetitions=self.config.num_repetitions,
+                dropout=self.config.dropout,
+            )
+            intermediate_layers.append(layer)
+
+        # Construct final root product layer
+        root_sum = SumLayer(
+            num_sums_in=_num_sums_out,
+            num_sums_out=self.config.num_classes,
+            num_features=intermediate_layers[-1].num_features_out,
+            num_repetitions=self.config.num_repetitions,
+        )
+        root_product = RootProductLayer(
+            num_features=intermediate_layers[-1].num_features_out, num_repetitions=self.config.num_repetitions
+        )
+
+        intermediate_layers.append(root_sum)
+        intermediate_layers.append(root_product)
+
+        # Construct leaf
+        leaf_num_features_out = self.config.num_features
+        self.leaf = self._build_input_distribution_bottom_up()
+        # self.leaf = self._build_input_distribution(num_features_out=leaf_num_features_out)
+
+        # List layers in a bottom-to-top fashion
+        self.layers: List[Union[EinsumLayer, LinsumLayer]] = nn.ModuleList(intermediate_layers)
+
+        # Construct num_repertitions number of random permuations
+        permutations = torch.empty((self.config.num_repetitions, self.config.num_features), dtype=torch.long)
+        permutations_inv = torch.empty_like(permutations)
+        for i in range(self.config.num_repetitions):
+            permutations[i] = torch.randperm(self.config.num_features)
+            permutations_inv[i] = invert_permutation(permutations[i])
+
+        # Construct inverse permutations
+
+        self.register_buffer("permutation", permutations)
+        self.register_buffer("permutation_inv", permutations_inv)
+
+        # If model has multiple reptitions, add repetition mixing layer
+        if self.config.num_repetitions > 1:
+            self.mixing = MixingLayer(
+                num_features=1,
+                num_sums_in=self.config.num_repetitions,
+                num_sums_out=self.config.num_classes,
+                dropout=self.config.dropout,
+            )
+
+        # Construct sampling root with weights according to priors for sampling
+        if self.config.num_classes > 1:
+            self._class_sampling_root = SumLayer(
+                num_sums_in=self.config.num_classes,
+                num_features=1,
+                num_sums_out=1,
+                num_repetitions=1,
+            )
+            self._class_sampling_root.weights = nn.Parameter(
+                torch.log(
+                    torch.ones(size=(1, self.config.num_classes, 1, 1)) * torch.tensor(1 / self.config.num_classes)
+                ),
+                requires_grad=False,
+            )
+
+    def _build_input_distribution_bottom_up(self) -> AbstractLeaf:
+        """Construct the input distribution layer. This constructs a direct leaf and not a FactorizedLeaf since the bottom_up approach does not factorize."""
+        # Cardinality is the size of the region in the last partitions
+        return self.config.leaf_type(
+            num_features=self.config.num_features,
+            num_channels=self.config.num_channels,
+            num_leaves=self.config.num_leaves,
+            num_repetitions=self.config.num_repetitions,
+            **self.config.leaf_kwargs,
+        )
+
+    def _build_input_distribution(self, num_features_out: int) -> FactorizedLeafSimple:
         """Construct the input distribution layer."""
         # Cardinality is the size of the region in the last partitions
         base_leaf = self.config.leaf_type(
@@ -284,7 +494,13 @@ class Einet(nn.Module):
             **self.config.leaf_kwargs,
         )
 
-        return FactorizedLeaf(
+        if self.config.num_repetitions == 1:
+            factorized_leaf_class = FactorizedLeafSimple
+        else:
+            factorized_leaf_class = FactorizedLeaf
+
+        # factorized_leaf_class = FactorizedLeaf
+        return factorized_leaf_class(
             num_features=base_leaf.out_features,
             num_features_out=num_features_out,
             num_repetitions=self.config.num_repetitions,
@@ -316,16 +532,17 @@ class Einet(nn.Module):
 
     def sample(
         self,
-        num_samples: int = None,
+        num_samples: Optional[int] = None,
         class_index=None,
-        evidence: torch.Tensor = None,
+        evidence: Optional[torch.Tensor] = None,
         is_mpe: bool = False,
         mpe_at_leaves: bool = False,
         temperature_leaves: float = 1.0,
         temperature_sums: float = 1.0,
-        marginalized_scopes: List[int] = None,
+        marginalized_scopes: Optional[List[int]] = None,
         is_differentiable: bool = False,
-        seed: int = None,
+        return_leaf_params: bool = False,
+        seed: Optional[int] = None,
     ):
         """
         Sample from the distribution represented by this SPN.
@@ -351,34 +568,19 @@ class Einet(nn.Module):
             mpe_at_leaves: Flag to perform mpe only at leaves.
             marginalized_scopes: List of scopes to marginalize.
             is_differentiable: Flag to enable differentiable sampling.
+            return_leaf_params: Flag to return the leaf distribution instead of the samples.
             seed: Seed for torch.random.
 
         Returns:
             torch.Tensor: Samples generated according to the distribution specified by the SPN.
 
         """
-        class_is_given = class_index is not None
-        evidence_is_given = evidence is not None
-        is_multiclass = self.config.num_classes > 1
+        assert class_index is None or evidence is None, "Cannot provide both, evidence and class indices."
+        assert num_samples is None or evidence is None, "Cannot provide both, number of samples to generate (num_samples) and evidence."
+        if self.config.num_classes == 1:
+            assert class_index is None, "Cannot sample classes for single-class models (i.e. num_classes must be 1)."
 
-        assert not (class_is_given and evidence_is_given), "Cannot provide both, evidence and class indices."
-        assert (
-            num_samples is None or not evidence_is_given
-        ), "Cannot provide both, number of samples to generate (num_samples) and evidence."
-
-        if num_samples is not None:
-            assert num_samples > 0, "Number of samples must be > 0."
-
-        # if not is_mpe:
-        #     assert ((class_index is not None) and (self.config.num_classes > 1)) or (
-        #         (class_index is None) and (self.config.num_classes == 1)
-        #     ), "Class index must be given if the number of classes is > 1 or must be none if the number of classes is 1."
-
-        if class_is_given:
-            assert (
-                self.config.num_classes > 1
-            ), f"Class indices are only supported when the number of classes for this model is > 1."
-
+        # Check if evidence contains nans
         if evidence is not None:
             # Set n to the number of samples in the evidence
             num_samples = evidence.shape[0]
@@ -407,6 +609,7 @@ class Einet(nn.Module):
             indices_out=indices_out,
             indices_repetition=indices_repetition,
             is_differentiable=is_differentiable,
+            return_leaf_params=return_leaf_params,
         )
         with sampling_context(self, evidence, marginalized_scopes, requires_grad=is_differentiable, seed=seed):
             if self.config.num_classes > 1:
@@ -437,7 +640,7 @@ class Einet(nn.Module):
 
                     ctx.indices_out = indices
                 else:
-                    # Sample class
+                    # Sample class index from root
                     ctx = self._class_sampling_root.sample(ctx=ctx)
 
             # Save parent indices that were sampled from the sampling root
@@ -456,15 +659,38 @@ class Einet(nn.Module):
             for layer in reversed(self.layers):
                 ctx = layer.sample(ctx=ctx)
 
+            # Apply inverse permutation
+            if hasattr(self, "permutation_inv"):
+                # Select relevant inverse permuation based on repetition index
+                if is_differentiable:
+                    permutation_inv = self.permutation_inv.unsqueeze(0)  # Make space for num_samples
+                    permutation_inv = self.permutation_inv.expand(num_samples, -1, -1)  # [N, R, D]
+                    r_idxs = ctx.indices_repetition.unsqueeze(-1)  # Make space for feature dim
+                    permutation_inv = index_one_hot(permutation_inv, r_idxs, dim=1)  # [N, D]
+                    permutation_inv = permutation_inv.unsqueeze(-1).expand(-1, -1, self.config.num_leaves).long()  # [N, D, I]
+                    ctx.indices_out = ctx.indices_out.gather(index=permutation_inv, dim=1)
+                else:
+                    permutation_inv = self.permutation_inv[ctx.indices_repetition]
+                    ctx.indices_out = ctx.indices_out.gather(index=permutation_inv, dim=1)
+
             # Sample leaf
             samples = self.leaf.sample(ctx=ctx)
 
+            if return_leaf_params:
+                # Samples contain the distribution parameters instead of the samples
+                return samples
+
             if evidence is not None:
                 # First make a copy such that the original object is not changed
-                evidence = evidence.clone()
+                evidence = evidence.clone().float()
                 shape_evidence = evidence.shape
                 evidence = evidence.view_as(samples)
-                evidence[:, :, marginalized_scopes] = samples[:, :, marginalized_scopes].to(evidence.dtype)
+                if marginalized_scopes is None:
+                    mask = torch.isnan(evidence)
+                    evidence[mask] = samples[mask].to(evidence.dtype)
+                else:
+                    evidence[:, :, marginalized_scopes] = samples[:, :, marginalized_scopes].to(evidence.dtype)
+
                 evidence = evidence.view(shape_evidence)
                 return evidence
             else:
@@ -492,4 +718,3 @@ def posterior(ll_x_g_y: torch.Tensor, num_classes) -> torch.Tensor:
     ll_x = torch.logsumexp(ll_x_and_y, dim=1, keepdim=True)
     ll_y_g_x = ll_x_g_y + ll_y - ll_x
     return ll_y_g_x
-

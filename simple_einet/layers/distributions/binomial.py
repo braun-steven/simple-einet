@@ -1,9 +1,9 @@
 from typing import List, Tuple, Union
 
+from torch.distributions.utils import probs_to_logits, logits_to_probs
 import numpy as np
 import torch
 from torch import distributions as dist
-from torch.distributions.utils import probs_to_logits, logits_to_probs
 from torch import nn
 
 from simple_einet.layers.distributions.abstract_leaf import (
@@ -46,17 +46,19 @@ class Binomial(AbstractLeaf):
         self.total_count = check_valid(total_count, int, lower_bound=1)
 
         # Create binomial parameters as unnormalized log probabilities
-
         p = 0.5 + (torch.rand(1, num_channels, num_features, num_leaves, num_repetitions) - 0.5) * 0.2
         self.logits = nn.Parameter(probs_to_logits(p, is_binary=True))
 
     def _get_base_distribution(self, ctx: SamplingContext = None):
-        # Cast logits to probabilities
+        # Use sigmoid to ensure, that probs are in valid range
+        probs = logits_to_probs(self.logits, is_binary=True)
         if ctx is not None and ctx.is_differentiable:
-            probs = logits_to_probs(self.logits, is_binary=True)
             return DifferentiableBinomial(probs=probs, total_count=self.total_count)
         else:
-            return dist.Binomial(logits=self.logits, total_count=self.total_count)
+            return dist.Binomial(probs=probs, total_count=self.total_count)
+
+    def get_params(self):
+        return self.logits.unsqueeze(-1)
 
 
 class DifferentiableBinomial:
@@ -122,6 +124,9 @@ class DifferentiableBinomial:
         """
         return dist.Binomial(probs=self.probs, total_count=self.total_count).log_prob(x)
 
+    def get_params(self):
+        return self.probs.unsqueeze(-1)
+
 
 class ConditionalBinomial(AbstractLeaf):
     """
@@ -170,11 +175,12 @@ class ConditionalBinomial(AbstractLeaf):
         self.cond_fn = cond_fn
         self.cond_idxs = cond_idxs
 
-        p = 0.5 + (torch.rand(1, num_channels, num_features // 2, num_leaves, num_repetitions) - 0.5) * 0.2
-        self.logits_conditioned_base = nn.Parameter(probs_to_logits(p, is_binary=True))
-
-        p = 0.5 + (torch.rand(1, num_channels, num_features // 2, num_leaves, num_repetitions) - 0.5) * 0.2
-        self.logits_unconditioned = nn.Parameter(probs_to_logits(p, is_binary=True))
+        self.probs_conditioned_base = nn.Parameter(
+            0.5 + torch.rand(1, num_channels, num_features // 2, num_leaves, num_repetitions) * 0.1
+        )
+        self.probs_unconditioned = nn.Parameter(
+            0.5 + torch.rand(1, num_channels, num_features // 2, num_leaves, num_repetitions) * 0.1
+        )
 
     def get_conditioned_distribution(self, x_cond: torch.Tensor):
         """
@@ -192,22 +198,22 @@ class ConditionalBinomial(AbstractLeaf):
         x_cond_shape = x_cond.shape
 
         # Get conditioned parameters
-        logits_cond = self.cond_fn(x_cond.view(-1, x_cond.shape[1], hw, hw))
-        logits_cond = logits_cond.view(
+        probs_cond = self.cond_fn(x_cond.view(-1, x_cond.shape[1], hw, hw))
+        probs_cond = probs_cond.view(
             x_cond_shape[0],
             x_cond_shape[1],
             self.num_leaves,
             self.num_repetitions,
             hw * hw,
         )
-        logits_cond = logits_cond.permute(0, 1, 4, 2, 3)
+        probs_cond = probs_cond.permute(0, 1, 4, 2, 3)
 
-        # Add conditioned parameters as "correction" to default parameters
-        logits_cond = self.logits_conditioned_base + logits_cond
+        # Add conditioned parameters to default parameters
+        probs_cond = self.probs_conditioned_base + probs_cond
 
-        logits_unc = self.logits_unconditioned.expand(x_cond.shape[0], -1, -1, -1, -1)
-        logits = torch.cat((logits_cond, logits_unc), dim=2)
-        d = dist.Binomial(self.total_count, logits=logits)
+        probs_unc = self.probs_unconditioned.expand(x_cond.shape[0], -1, -1, -1, -1)
+        probs = torch.cat((probs_cond, probs_unc), dim=2)
+        d = dist.Binomial(self.total_count, logits=probs)
         return d
 
     def forward(self, x, marginalized_scopes: List[int]):

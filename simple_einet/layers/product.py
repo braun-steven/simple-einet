@@ -13,6 +13,22 @@ from simple_einet.type_checks import check_valid
 logger = logging.getLogger(__name__)
 
 
+class RootProductLayer(AbstractLayer):
+    def __init__(self, num_features: int, num_repetitions: int):
+        super().__init__(num_features, num_repetitions)
+        self.out_shape = f"(N, {self.num_features}, in_channels, {self.num_repetitions})"
+
+    def forward(self, x: torch.Tensor):
+        assert x.size(1) == self.num_features
+        return x.sum(dim=1, keepdim=True)
+
+    def sample(self, ctx: SamplingContext) -> SamplingContext:
+        shape = [1] * ctx.indices_out.dim()
+        shape[1] = self.num_features
+        ctx.indices_out = ctx.indices_out.repeat(*shape)
+        return ctx
+
+
 class ProductLayer(AbstractLayer):
     """
     Product Node Layer that chooses k scopes as children for a product node.
