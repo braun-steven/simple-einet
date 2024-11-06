@@ -120,11 +120,11 @@ def dist_sample(distribution: dist.Distribution, ctx: SamplingContext = None) ->
             samples = samples.unsqueeze(0)
         else:
             if type(distribution) == dist.Normal:
-                distribution = dist.Normal(loc=distribution.loc, scale=distribution.scale / ctx.temperature_leaves)
+                distribution = dist.Normal(loc=distribution.loc, scale=distribution.scale * np.sqrt(ctx.temperature_leaves))
             elif type(distribution) == CustomNormal:
-                distribution = CustomNormal(mu=distribution.mu, sigma=distribution.sigma / ctx.temperature_leaves)
+                distribution = CustomNormal(mu=distribution.mu, sigma=distribution.sigma * np.sqrt(ctx.temperature_leaves))
             elif type(distribution) == dist.Categorical:
-                distribution = dist.Categorical(logits=F.log_softmax(distribution.probs / ctx.temperature_leaves))
+                distribution = dist.Categorical(logits=F.softmax(distribution.logits / ctx.temperature_leaves))
 
             samples = distribution.sample(sample_shape=(ctx.num_samples,)).float()
 
