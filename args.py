@@ -161,6 +161,7 @@ def parse_args():
 
     parser.add_argument("--log-weights", action="store_true", help="use log weights")
     parser.add_argument("--num-devices", type=int, default=1, help="number of devices")
+    parser.add_argument("--structure", default="top-down", choices=["bottom-up", "top-down"], help="structure of the network")
 
     # Parse args
     args = parser.parse_args()

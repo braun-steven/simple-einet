@@ -37,7 +37,7 @@ class EinetConfig:
     leaf_type: Type = None  # Type of the leaf base class (Normal, Bernoulli, etc)
     leaf_kwargs: Dict[str, Any] = field(default_factory=dict)  # Parameters for the leaf base class
     layer_type: str = "linsum"  # Indicates the intermediate layer type: linsum or einsum
-    structure: str = "original"  # Structure of the Einet: original or bottom_up
+    structure: str = "top-down"  # Structure of the Einet: top-down or bottom-up
 
     def assert_valid(self):
         """Check whether the configuration is valid."""
@@ -58,9 +58,9 @@ class EinetConfig:
             "einsum",
         ], f"Invalid layer type {self.layer_type}. Must be 'linsum' or 'einsum'."
         assert self.structure in [
-            "original",
-            "bottom_up",
-        ], f"Invalid structure type {self.structure}. Must be 'original' or 'bottom_up'."
+            "top-down",
+            "bottom-up",
+        ], f"Invalid structure type {self.structure}. Must be 'top-down' or 'bottom-up'."
 
         assert isinstance(self.leaf_type, type) and issubclass(
             self.leaf_type, AbstractLeaf
@@ -72,7 +72,7 @@ class EinetConfig:
         else:
             cardinality = 1
 
-        if self.structure == "bottom_up":
+        if self.structure == "bottom-up":
             assert self.layer_type == "linsum", "Bottom-up structure only supports LinsumLayer due to handling of padding (not implemented for einsumlayer yet)."
 
         # Get minimum number of features present at the lowest layer (num_features is the actual input dimension,
@@ -104,12 +104,12 @@ class Einet(nn.Module):
         self.config = config
 
         # Construct the architecture
-        if self.config.structure == "original":
-            self._build_structure_original()
-        elif self.config.structure == "bottom_up":
+        if self.config.structure == "top-down":
+            self._build_structure_top_down()
+        elif self.config.structure == "bottom-up":
             self._build_structure_bottom_up()
         else:
-            raise ValueError(f"Invalid structure type {self.config.structure}. Must be 'original' or 'bottom_up'.")
+            raise ValueError(f"Invalid structure type {self.config.structure}. Must be '_riginal' or 'bottom-up'.")
 
         # Leaf cache
         self._leaf_cache = {}
@@ -235,9 +235,9 @@ class Einet(nn.Module):
 
         return posterior(ll_x_g_y, self.config.num_classes)
 
-    def _build_structure_original(self):
+    def _build_structure_top_down(self):
         """Construct the internal architecture of the Einet."""
-        # Build the SPN bottom up:
+        # Build the SPN top down:
         # Definition from RAT Paper
         # Leaf Region:      Create I leaf nodes
         # Root Region:      Create C sum nodes
@@ -473,7 +473,7 @@ class Einet(nn.Module):
             )
 
     def _build_input_distribution_bottom_up(self) -> AbstractLeaf:
-        """Construct the input distribution layer. This constructs a direct leaf and not a FactorizedLeaf since the bottom_up approach does not factorize."""
+        """Construct the input distribution layer. This constructs a direct leaf and not a FactorizedLeaf since the bottom-up approach does not factorize."""
         # Cardinality is the size of the region in the last partitions
         return self.config.leaf_type(
             num_features=self.config.num_features,

@@ -16,6 +16,21 @@ hydra:
       file:
         filename: ${hydra.runtime.output_dir}/${hydra.job.name}.log  # Fixed in hydra-colorlog version 1.2.1
 
+einet:
+  S: 10
+  I: 10
+  D: 3
+  R: 1
+  layer_type: "linsum"
+  structure: "top-down"
+
+convpc:
+  channels: [8, 16, 16, 16]
+  order: "sum-prod"
+  structure: "top-down"
+  kernel_size: 2
+
+
 
 # Default set of configurations.
 data_dir: "${oc.env:DATA_DIR}/"
@@ -36,15 +51,9 @@ log_interval: 10
 classification: False
 device: "cuda"
 debug: False
-S: 10
-I: 10
-D: 3
-R: 1
 gpu: 0
 epochs: 10
 load_and_eval: False
-layer_type: "linsum"
-dist: "normal"
 precision: "bf16-mixed"
 group_tag: ???
 tag: ???
@@ -54,6 +63,8 @@ profiler: ???
 dataset: ???
 num_classes: 10
 init_leaf_data: False
-einet_mixture: False
+mixture: False
 torch_compile: False
 multivariate_cardinality: 2
+dist: "normal"
+model: "einet"  # Can be one of "einet" or "convpc"

@@ -10,16 +10,17 @@ from omegaconf import DictConfig
 from rtpt import RTPT
 from torch import nn
 
+from simple_einet.conv_pc import ConvPcConfig, ConvPc
 from simple_einet.data import get_data_shape
 from simple_einet.dist import Dist, get_distribution
 from simple_einet.einet import EinetConfig, Einet
-from simple_einet.einet_mixture import EinetMixture
+from simple_einet.mixture import Mixture
 
 # Translate the dataloader index to the dataset name
 DATALOADER_ID_TO_SET_NAME = {0: "train", 1: "val", 2: "test"}
 
 
-def make_einet(cfg, num_classes: int = 1) -> EinetMixture | Einet:
+def make_einet(cfg, num_classes: int = 1) -> Mixture | Einet:
     """
     Make an Einet model based off the given arguments.
 
@@ -38,20 +39,53 @@ def make_einet(cfg, num_classes: int = 1) -> EinetMixture | Einet:
     config = EinetConfig(
         num_features=image_shape.num_pixels,
         num_channels=image_shape.channels,
-        depth=cfg.D,
-        num_sums=cfg.S,
-        num_leaves=cfg.I,
-        num_repetitions=cfg.R,
+        depth=cfg.einet.D,
+        num_sums=cfg.einet.S,
+        num_leaves=cfg.einet.I,
+        num_repetitions=cfg.einet.R,
         num_classes=num_classes,
         leaf_kwargs=leaf_kwargs,
         leaf_type=leaf_type,
         dropout=cfg.dropout,
-        layer_type=cfg.layer_type,
+        layer_type=cfg.einet.layer_type,
+        structure=cfg.einet.structure,
     )
-    if cfg.einet_mixture:
-        return EinetMixture(n_components=num_classes, einet_config=config)
+    if cfg.mixture:
+        return Mixture(n_components=num_classes, config=config)
     else:
         return Einet(config)
+
+
+def make_convpc(cfg, num_classes: int = 1) -> Mixture | ConvPc:
+    """
+    Make ConvPc model based off the given arguments.
+
+    Args:
+        cfg: Arguments parsed from argparse.
+        num_classes: Number of classes to model.
+
+    Returns:
+        ConvPc model.
+    """
+
+    image_shape = get_data_shape(cfg.dataset)
+    # leaf_kwargs, leaf_type = {"total_count": 255}, Binomial
+    leaf_kwargs, leaf_type = get_distribution(dist=cfg.dist, cfg=cfg)
+
+    config = ConvPcConfig(
+        channels=cfg.convpc.channels,
+        num_channels=image_shape.channels,
+        num_classes=num_classes,
+        leaf_kwargs=leaf_kwargs,
+        leaf_type=leaf_type,
+        structure=cfg.convpc.structure,
+        order=cfg.convpc.order,
+        kernel_size=cfg.convpc.kernel_size,
+    )
+    if cfg.mixture:
+        return Mixture(n_components=num_classes, config=config, data_shape=image_shape)
+    else:
+        return ConvPc(config=config, data_shape=image_shape)
 
 
 class LitModel(pl.LightningModule, ABC):
@@ -123,7 +157,13 @@ class SpnGenerative(LitModel):
 
     def __init__(self, cfg: DictConfig, steps_per_epoch: int):
         super().__init__(cfg=cfg, name="gen", steps_per_epoch=steps_per_epoch)
-        self.spn = make_einet(cfg)
+        if cfg.model == "einet":
+            self.spn = make_einet(cfg, num_classes=cfg.num_classes)
+        elif cfg.model == "convpc":
+            self.spn = make_convpc(cfg, num_classes=cfg.num_classes)
+        else:
+            raise ValueError(f"Unknown model {cfg.model}")
+
 
     def training_step(self, train_batch, batch_idx):
         data, labels = train_batch
@@ -209,7 +249,12 @@ class SpnDiscriminative(LitModel):
         super().__init__(cfg, name="disc", steps_per_epoch=steps_per_epoch)
 
         # Construct SPN
-        self.spn = make_einet(cfg, num_classes=10)
+        if cfg.model == "einet":
+            self.spn = make_einet(cfg, num_classes=cfg.num_classes)
+        elif cfg.model == "convpc":
+            self.spn = make_convpc(cfg, num_classes=cfg.num_classes)
+        else:
+            raise ValueError(f"Unknown model {cfg.model}")
 
         # Define loss function
         self.criterion = nn.NLLLoss()

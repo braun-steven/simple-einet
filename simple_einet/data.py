@@ -96,7 +96,7 @@ def get_data_shape(dataset_name: str) -> Shape:
             "cifar": (3, 32, 32),
             "svhn": (3, 32, 32),
             "svhn-extra": (3, 32, 32),
-            "celeba": (3, 64, 64),
+            "celeba": (3, 128, 128),
             "celeba-small": (3, 64, 64),
             "celeba-tiny": (3, 32, 32),
             "lsun": (3, 32, 32),

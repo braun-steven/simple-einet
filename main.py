@@ -23,7 +23,7 @@ import torchvision
 from simple_einet.layers.distributions.binomial import Binomial
 from simple_einet.layers.distributions.normal import RatNormal, Normal
 from simple_einet.einet import Einet, EinetConfig
-from simple_einet.einet_mixture import EinetMixture
+from simple_einet.mixture import Mixture
 
 import lightning as L
 
@@ -42,7 +42,7 @@ def log_likelihoods(outputs, targets=None):
     return lls
 
 
-def train(args, model: Union[Einet, EinetMixture], device, train_loader, optimizer, epoch):
+def train(args, model: Union[Einet, Mixture], device, train_loader, optimizer, epoch):
     model.train()
 
     pbar = tqdm.tqdm(train_loader)
@@ -62,15 +62,8 @@ def train(args, model: Union[Einet, EinetMixture], device, train_loader, optimiz
 
         optimizer.zero_grad()
 
-        if args.dist == Dist.PIECEWISE_LINEAR:
-            cache_leaf = True
-            cache_index = batch_idx
-        else:
-            cache_leaf = False
-            cache_index = None
-
         # Generate outputs
-        outputs = model(data, cache_leaf=cache_leaf, cache_index=cache_index)
+        outputs = model(data)
 
         if args.classification:
             model.posterior(data)
@@ -191,6 +184,7 @@ if __name__ == "__main__":
         leaf_kwargs=leaf_kwargs,
         layer_type=args.layer,
         dropout=0.0,
+        structure=args.structure,
     )
 
     fabric = L.Fabric(accelerator=args.device, devices=args.num_devices, precision="16-mixed")
@@ -227,67 +221,6 @@ if __name__ == "__main__":
 
     train_loader, val_loader, test_loader = fabric.setup_dataloaders(train_loader, val_loader, test_loader)
 
-    if args.dist == Dist.PIECEWISE_LINEAR:
-        # Initialize the piecewise linear function
-        # Collect data
-        batches = []
-        count = 0
-        for data, _ in train_loader:
-            batches.append(data)
-            count += data.shape[0]
-            if count > 10000:
-                break
-        data_init_pwl = torch.cat(batches, dim=0)
-
-        # Prepare data
-        data_init_pwl = preprocess(
-            data_init_pwl,
-            n_bits,
-            n_bins,
-            dequantize=True,
-            has_gauss_dist=has_gauss_dist,
-        )
-
-        data_init_pwl = data_init_pwl.view(data_init_pwl.shape[0], data_init_pwl.shape[1], num_features)
-
-        domains = [Domain.discrete_range(min=0, max=255)] * num_features
-        with torch.no_grad():
-            model.leaf.base_leaf.initialize(data_init_pwl, domains=domains)
-
-        # Use mixture weights obtained in leaf initialization and set these to the first linsum layer weights
-        model.layers[0].logits.data[:] = model.leaf.base_leaf.mixture_weights.permute(1, 0).view(1, config.num_leaves, 1, config.num_repetitions).log()
-
-        # Visualize a couple of pixel distributions and their piecewise linear functions
-        # Select 20 random pixels
-        pixels = list(range(64))[::3]
-        # pixels = [36, 766, 720, 588, 759, 403, 664, 428, 25, 686, 673, 638, 44, 147, 610, 470, 540, 179, 698, 420]
-
-        d = model.leaf.base_leaf._get_base_distribution()
-        log_probs = d.log_prob(data_init_pwl)
-
-        xs = d.xs
-        ys = d.ys
-
-        for pixel in pixels:
-            # Get data subset
-            # xs_pixel = xs[pixel][0][0][0].squeeze()
-            # ys_pixel = ys[pixel][0][0][0].squeeze()
-            xs_pixel = xs[0][0][pixel][0].squeeze().cpu()
-            ys_pixel = ys[0][0][pixel][0].squeeze().cpu()
-
-            # Plot pixel distribution with pixel value as x and logprob as y values
-            import matplotlib.pyplot as plt
-
-            plt.figure(figsize=(12, 6))
-            plt.plot(xs_pixel, ys_pixel, label="PWL")
-
-            # Plot histogram of pixel values
-            plt.hist(data_init_pwl[:, :, pixel].flatten().cpu().numpy(), bins=100, density=True, alpha=0.5, label="Data")
-            plt.xlabel("Pixel Value")
-            plt.ylabel("Density")
-            plt.legend()
-            plt.savefig(os.path.join(result_dir, f"pwl-{pixel}.png"), dpi=300)
-            plt.close()
 
     if args.train:
         for epoch in range(1, args.epochs + 1):

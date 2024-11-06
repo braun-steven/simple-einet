@@ -58,8 +58,6 @@ def main(cfg: DictConfig):
     logger.info("\n" + OmegaConf.to_yaml(cfg, resolve=True))
     logger.info("Run dir: " + run_dir)
 
-    seed_everything(cfg.seed, workers=True)
-
     if not cfg.wandb:
         os.environ["WANDB_MODE"] = "offline"
 
@@ -87,6 +85,7 @@ def main(cfg: DictConfig):
         num_workers=min(cfg.num_workers, os.cpu_count()),
         loop=False,
         normalize=normalize,
+        seed=cfg.seed,
     )
 
     # Create callbacks
@@ -120,7 +119,7 @@ def main(cfg: DictConfig):
             # model = torch.compile(model)
             raise NotImplementedError("Torch compilation not yet supported with einsum.")
 
-        if cfg.einet_mixture:
+        if cfg.mixture:
             # If we chose a mixture of einets, we need to initialize the mixture weights
             logger.info("Initializing Einet mixture weights")
             model.spn.initialize(dataloader=train_loader, device=devices[0])

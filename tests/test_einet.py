@@ -35,7 +35,7 @@ class TestEinet(TestCase):
         self.leaf_type = Binomial
         self.leaf_kwargs = {"total_count": 255}
 
-    @parameterized.expand(product([False, True], [1, 3], [1, 4], ["original", "bottom_up"], ["linsum"]))
+    @parameterized.expand(product([False, True], [1, 3], [1, 4], ["top-down", "bottom-up"], ["linsum"]))
     def test_sampling_shapes(self, differentiable: bool, num_classes: int, num_repetitions: int, structure: str, layer_type: str):
         model = self.make_einet(num_classes=num_classes, num_repetitions=num_repetitions, structure=structure, layer_type=layer_type)
         N = 2
@@ -49,7 +49,7 @@ class TestEinet(TestCase):
         samples = model.sample(evidence=evidence, is_differentiable=differentiable)
         self.assertEqual(samples.shape, (N, self.num_channels, self.num_features))
 
-    @parameterized.expand(product([False, True], [1, 3], [1, 4], ["original", "bottom_up"], ["linsum"]))
+    @parameterized.expand(product([False, True], [1, 3], [1, 4], ["top-down", "bottom-up"], ["linsum"]))
     def test_mpe_shapes(self, differentiable: bool, num_classes: int, num_repetitions: int, structure: str, layer_type: str):
         model = self.make_einet(num_classes=num_classes, num_repetitions=num_repetitions, structure=structure, layer_type=layer_type)
         N = 2
