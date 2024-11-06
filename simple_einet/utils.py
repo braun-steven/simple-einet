@@ -56,6 +56,7 @@ def dequantize_image(image: Tensor, n_bins: int) -> Tensor:
 
 
 def reduce_bits(image: Tensor, n_bits: int) -> Tensor:
+    assert torch.all(image >= 0) and torch.all(image <= 1), "Image values must be in [0, 1] range."
     image = image * 255
     if n_bits < 8:
         image = torch.floor(image / 2 ** (8 - n_bits))
