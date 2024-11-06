@@ -1,4 +1,6 @@
 from _operator import xor
+from simple_einet.data import Shape
+from simple_einet.conv_pc import ConvPc, ConvPcConfig
 from collections import defaultdict
 from typing import List, Optional, Sequence
 
@@ -8,24 +10,35 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 from simple_einet.einet import EinetConfig, Einet
+from simple_einet.layers.distributions.binomial import Binomial
 from simple_einet.type_checks import check_valid
 
 
-class EinetMixture(nn.Module):
-    def __init__(self, n_components: int, einet_config: EinetConfig):
+class Mixture(nn.Module):
+    def __init__(self, n_components: int, config: EinetConfig | ConvPcConfig, data_shape: Shape | None = None):
         super().__init__()
         self.n_components = check_valid(n_components, expected_type=int, lower_bound=1)
-        self.config = einet_config
+        self.config = config
 
-        einets = []
+        models = []
 
-        for i in range(n_components):
-            einets.append(Einet(einet_config))
+        # Construct single models
+        for _ in range(n_components):
+            if isinstance(config, EinetConfig):
+                model = Einet(config)
+                self.num_features = config.num_features
+            elif isinstance(config, ConvPcConfig):
+                assert data_shape is not None, "data_shape must not be None (required for ConvPc)"
+                self.num_features = data_shape.num_pixels * data_shape.channels
+                model = ConvPc(config, data_shape)
+            else:
+                raise ValueError(f"Unknown model config type: {type(config)}")
+            models.append(model)
 
-        self.einets: Sequence[Einet] = nn.ModuleList(einets)
+        self.models: Sequence[Einet | ConvPc] = nn.ModuleList(models)
         self._kmeans = KMeans(n_clusters=self.n_components, mode="euclidean", verbose=1)
-        self.mixture_weights = nn.Parameter(torch.empty(n_components), requires_grad=False)
-        self.centroids = nn.Parameter(torch.empty(n_components, einet_config.num_features), requires_grad=False)
+        self.register_buffer("mixture_weights", torch.empty(n_components))
+        self.register_buffer("centroids", torch.empty(n_components, self.num_features))
 
     @torch.no_grad()
     def initialize(self, data: torch.Tensor = None, dataloader: DataLoader = None, device=None):
@@ -37,7 +50,7 @@ class EinetMixture(nn.Module):
             for batch in dataloader:
                 x, y = batch
                 l.append(x)
-                if sum([d.shape[0] for d in l]) > 10000:
+                if sum([d.shape[0] for d in l]) > 30000:
                     break
 
             data = torch.cat(l, dim=0).to(device)
@@ -49,10 +62,14 @@ class EinetMixture(nn.Module):
 
         self.centroids.data = self._kmeans.centroids
 
+        # Scale centroids if necessary
+        if self.config.leaf_type == Binomial:
+            self.centroids.data = self.centroids.data * self.config.leaf_kwargs["total_count"]
+
     def _predict_cluster(self, x, marginalized_scopes: Optional[List[int]] = None):
         x = x.view(x.shape[0], -1)  # input needs to be [n, d]
         if marginalized_scopes is not None:
-            keep_idx = list(sorted([i for i in range(self.config.num_features) if i not in marginalized_scopes]))
+            keep_idx = list(sorted([i for i in range(self.num_features) if i not in marginalized_scopes]))
             centroids = self.centroids[:, keep_idx]
             x = x[:, keep_idx]
         else:
@@ -71,7 +88,7 @@ class EinetMixture(nn.Module):
         return separated_idxs, separated_data
 
     def forward(self, x, marginalized_scope: torch.Tensor = None):
-        assert self._kmeans is not None, "EinetMixture has not been initialized yet."
+        assert self._kmeans is not None, "Mixture has not been initialized yet."
 
         separated_idxs, separated_data = self._separate_data_by_cluster(x, marginalized_scope)
 
@@ -79,7 +96,7 @@ class EinetMixture(nn.Module):
         data_idxs_all = []
         for cluster_idx, data_list in separated_data.items():
             data_tensor = torch.stack(data_list, dim=0)
-            lls = self.einets[cluster_idx](data_tensor)
+            lls = self.models[cluster_idx](data_tensor)
 
             data_idxs = separated_idxs[cluster_idx]
             for data_idx, ll in zip(data_idxs, lls):
@@ -98,14 +115,14 @@ class EinetMixture(nn.Module):
 
     def sample(
         self,
-        num_samples: int = None,
-        num_samples_per_cluster: int = None,
+        num_samples: Optional[int] = None,
+        num_samples_per_cluster: Optional[int] = None,
         class_index=None,
-        evidence: torch.Tensor = None,
+        evidence: Optional[torch.Tensor] = None,
         is_mpe: bool = False,
         temperature_leaves: float = 1.0,
         temperature_sums: float = 1.0,
-        marginalized_scopes: List[int] = None,
+        marginalized_scopes: Optional[List[int]] = None,
         seed=None,
         mpe_at_leaves: bool = False,
     ):
@@ -140,7 +157,7 @@ class EinetMixture(nn.Module):
 
             samples_all = []
             for cluster_idx, num_samples_cluster in separated_idxs.items():
-                samples = self.einets[cluster_idx].sample(
+                samples = self.models[cluster_idx].sample(
                     num_samples_cluster,
                     class_index=class_index,
                     evidence=evidence,
@@ -172,7 +189,7 @@ class EinetMixture(nn.Module):
             evidence_idxs_all = []
             for cluster_idx, evidence_pre_cluster in separated_data.items():
                 evidence_per_cluster = torch.stack(evidence_pre_cluster, dim=0)
-                samples = self.einets[cluster_idx].sample(
+                samples = self.models[cluster_idx].sample(
                     evidence=evidence_per_cluster,
                     is_mpe=is_mpe,
                     temperature_leaves=temperature_leaves,

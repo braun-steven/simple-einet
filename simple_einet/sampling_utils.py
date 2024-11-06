@@ -324,14 +324,14 @@ def init_einet_stats(einet: "Einet", dataloader: torch.utils.data.DataLoader):
 
     from simple_einet.layers.distributions.normal import Normal
     from simple_einet.einet import Einet
-    from simple_einet.einet_mixture import EinetMixture
+    from simple_einet.mixture import Mixture
 
     # Set leaf parameters for normal distribution
     if einet.config.leaf_type == Normal:
         if type(einet) == Einet:
             einets = [einet]
-        elif type(einet) == EinetMixture:
-            einets = einet.einets
+        elif type(einet) == Mixture:
+            einets = einet.models
         else:
             raise ValueError(f"Invalid einet type: {type(einet)} -- must be Einet or EinetMixture.")
 
