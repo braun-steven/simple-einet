@@ -11,14 +11,11 @@ from rich.traceback import install
 install()
 
 import hydra
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 import torch.utils.data
-from pytorch_lightning import seed_everything
-from pytorch_lightning.callbacks import StochasticWeightAveraging, RichProgressBar
-from pytorch_lightning.loggers import WandbLogger
-from pytorch_lightning.utilities.model_summary import (
-    ModelSummary,
-)
+from lightning.pytorch import seed_everything
+from lightning.pytorch.callbacks import StochasticWeightAveraging, RichProgressBar, ModelSummary
+from lightning.pytorch.loggers import WandbLogger
 
 from exp_utils import (
     load_from_checkpoint,
@@ -128,15 +125,12 @@ def main(cfg: DictConfig):
             logger.info("Initializing leaf distributions from data statistics")
             init_einet_stats(model.spn, train_loader)
 
-    # Store number of model parameters
-    summary = ModelSummary(model, max_depth=-1)
-    logger.info("Model:")
-    logger.info(model)
-    logger.info("Summary:")
-    logger.info(summary)
-
     # Setup callbacks
     callbacks = []
+
+    # Store number of model parameters
+    summary = ModelSummary(max_depth=-1)
+    callbacks.append(summary)
 
     # Add StochasticWeightAveraging callback
     if cfg.swa:

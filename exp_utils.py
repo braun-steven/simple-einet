@@ -9,7 +9,7 @@ import PIL
 import matplotlib
 import matplotlib.pyplot as plt
 import torchvision.utils
-from pytorch_lightning.loggers import WandbLogger
+from lightning.pytorch.loggers import WandbLogger
 
 from rtpt import RTPT
 

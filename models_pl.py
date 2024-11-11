@@ -1,7 +1,7 @@
 from abc import ABC
 from typing import Tuple
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 import torch
 import torch.nn.parallel
 import torch.utils.data
