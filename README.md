@@ -1,3 +1,8 @@
+[![Python version](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![License](https://img.shields.io/github/license/braun-steven/simple-einet.svg)](https://github.com/braun-steven/simple-einet/blob/main/LICENSE.md)
+[![Code style: black & isort](https://img.shields.io/badge/code%20style-black%20%26%20isort-000000.svg)](https://black.readthedocs.io/en/stable/)
+
+
 # An EinsumNetworks Implementation
 
 This repository contains code for my personal EinsumNetworks implementation. 
