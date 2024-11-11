@@ -9,7 +9,7 @@ authors = [{name = "Steven Braun", email = "steven.braun.mz@gmail.com"}]
 description = "An efficient PyTorch implementation of EinsumNetworks."
 readme = "README.md"
 license = {file = "LICENSE.md"}  # If you have a LICENSE file
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 urls = { GitHub = "https://github.com/braun-steven/simple-einet" }
 
 dependencies = [
