@@ -1,6 +1,7 @@
 import logging
 from abc import ABC, abstractmethod
 from typing import List
+import numpy as np
 
 import torch
 from torch import distributions as dist, nn
