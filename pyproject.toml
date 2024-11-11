@@ -17,6 +17,7 @@ dependencies = [
     "torch~=2.0",
     # "fast_pytorch_kmeans~=0.2.0",
     "fast_pytorch_kmeans@git+https://github.com/DeMoriarty/fast_pytorch_kmeans#egg=1d41c5bda5647e344da3d5432f81f96f6fe21cf6",
+    "psutil~=6.0.0",  # Req. by fast_pytorch_kmeans
     "tqdm~=4.0",
     "scipy~=1.14.0",
     "imageio~=2.36.0"
