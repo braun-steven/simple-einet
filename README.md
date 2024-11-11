@@ -7,8 +7,6 @@
 
 This repository contains code for my personal EinsumNetworks implementation. 
 
-For a speed benchmark comparison against the official [EinsumNetworks](https://github.com/cambridge-mlg/EinsumNetworks) implementation, check out [benchmark.md](./benchmark/benchmark.md) (TLDR:  simple-einet is faster in all dimensions except the input-channel size in which it scales similar to the official EinsumNetworks implementation).
-
 ## Notebooks
 
 The `notebooks` directory contains Jupyter notebooks that demonstrate the usage of this library.
