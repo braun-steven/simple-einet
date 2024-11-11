@@ -5,7 +5,6 @@ from typing import Union
 
 import numpy as np
 import tqdm
-from icecream import install
 
 from args import parse_args
 from simple_einet.data import build_dataloader, get_data_shape
@@ -14,7 +13,6 @@ from simple_einet.layers.distributions.categorical import Categorical
 from simple_einet.layers.distributions.piecewise_linear import PiecewiseLinear
 from simple_einet.utils import preprocess
 
-install()
 
 import torch
 from torch.nn import functional as F
