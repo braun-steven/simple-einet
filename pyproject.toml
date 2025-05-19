@@ -50,4 +50,4 @@ app = [
 line-length = 120
 
 [tool.setuptools]
-packages = ["simple_einet"]
+packages = ["simple_einet", "simple_einet.layers", "simple_einet.layers.distributions"]
