@@ -104,8 +104,7 @@ class LinsumLayer(AbstractSumLayer):
 
         # Save input if input cache is enabled
         if self._is_input_cache_enabled:
-            self._input_cache["left"] = left
-            self._input_cache["right"] = right
+            self._input_cache["prod"] = prod_output.squeeze(3)
 
         return prob
 
@@ -137,20 +136,16 @@ class LinsumLayer(AbstractSumLayer):
 
     def _condition_weights_on_evidence(self, ctx, log_weights):
         # Extract input cache
-        input_cache_left = self._input_cache["left"]
-        input_cache_right = self._input_cache["right"]
+        input_cache_prod = self._input_cache["prod"]
 
         # Index repetition
         if ctx.is_differentiable:
             r_idxs = ctx.indices_repetition.view(ctx.num_samples, 1, 1, self.num_repetitions)
-            lls_left = index_one_hot(input_cache_left, index=r_idxs, dim=-1)
-            lls_right = index_one_hot(input_cache_right, index=r_idxs, dim=-1)
+            lls = index_one_hot(input_cache_prod, index=r_idxs, dim=-1)
         else:
             r_idxs = ctx.indices_repetition[..., None, None, None]
             r_idxs = r_idxs.expand(-1, self.num_features_out, self.num_sums_in, -1)
-            lls_left = input_cache_left.gather(index=r_idxs, dim=-1).squeeze(-1)
-            lls_right = input_cache_right.gather(index=r_idxs, dim=-1).squeeze(-1)
-        lls = (lls_left + lls_right).view(ctx.num_samples, self.num_features_out, self.num_sums_in)
+            lls = input_cache_prod.gather(index=r_idxs, dim=-1).squeeze(-1)
         log_prior = log_weights  # Shape: [batch, num_features_out, num_sums_in]
         log_posterior = log_prior + lls
         log_posterior = log_posterior - torch.logsumexp(log_posterior, dim=2, keepdim=True)
