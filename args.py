@@ -16,6 +16,12 @@ def parse_args():
         required=True,
         help="Dataset to use for training.",
     )
+    parser.add_argument(
+        "--image-size",
+        type=int,
+        default=None,
+        help="Override image size (square) for resizing datasets that use image transforms.",
+    )
     # Flag if model should be trained
     parser.add_argument(
         "--train",
@@ -57,7 +63,22 @@ def parse_args():
         type=int,
         default=14,
         metavar="N",
-        help="number of epochs to train (default: 14)",
+        help="(Deprecated) number of epochs to train (default: 14). Used only when --iterations is not set.",
+    )
+    parser.add_argument(
+        "--iterations",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Number of training iterations (batches). Overrides --epochs if set.",
+    )
+    parser.add_argument(
+        "--validations",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Number of validation runs linearly spaced across training iterations. "
+        "If not set, defaults to roughly one validation per epoch-equivalent.",
     )
     parser.add_argument(
         "--temperature-leaves",

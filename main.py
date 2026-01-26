@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 # install(suppress=[torch])
+import math
 import os
 from typing import Union
+from lion_pytorch import Lion
 
 import numpy as np
 import tqdm
 
 from args import parse_args
-from simple_einet.data import build_dataloader, get_data_shape
+from simple_einet.data import build_dataloader, get_data_shape, get_data_num_classes
 from simple_einet.dist import DataType, Dist, get_data_type_from_dist, Domain
 from simple_einet.layers.distributions.categorical import Categorical
 from simple_einet.layers.distributions.piecewise_linear import PiecewiseLinear
@@ -20,7 +22,7 @@ import torchvision
 
 from simple_einet.layers.distributions.binomial import Binomial
 from simple_einet.layers.distributions.normal import RatNormal, Normal
-from simple_einet.einet import Einet, EinetConfig
+from simple_einet.einet import Einet, EinetConfig, posterior
 from simple_einet.mixture import Mixture
 
 import lightning as L
@@ -40,14 +42,27 @@ def log_likelihoods(outputs, targets=None):
     return lls
 
 
-def train(args, model: Union[Einet, Mixture], device, train_loader, optimizer, epoch):
+def train_for_iterations(
+    args,
+    model: Union[Einet, Mixture],
+    device,
+    train_loader,
+    optimizer,
+    iterations: int,
+    lr_scheduler=None,
+    validation_steps: set[int] | None = None,
+    val_loader=None,
+):
     model.train()
 
-    pbar = tqdm.tqdm(train_loader)
-    for batch_idx, (data, target) in enumerate(pbar):
+    train_iter = iter(train_loader)
+    pbar = tqdm.trange(1, iterations + 1)
+    for step in pbar:
         # Stop after a few batches in debug mode
-        if args.debug and batch_idx > 2:
+        if args.debug and step > 3:
             break
+
+        data, target = next(train_iter)
 
         # Prepare data
         data = preprocess(
@@ -64,8 +79,9 @@ def train(args, model: Union[Einet, Mixture], device, train_loader, optimizer, e
         outputs = model(data)
 
         if args.classification:
-            model.posterior(data)
-            loss = F.nll_loss(outputs, target, reduction="mean")
+            # Convert log p(x | y) to log p(y | x) for NLL loss.
+            log_post = posterior(outputs, num_classes)
+            loss = F.nll_loss(log_post, target, reduction="mean")
         else:
             loss = log_likelihoods(outputs).mean()
             loss = -1 * loss
@@ -75,26 +91,32 @@ def train(args, model: Union[Einet, Mixture], device, train_loader, optimizer, e
 
         # Update weights
         optimizer.step()
+        if lr_scheduler is not None:
+            lr_scheduler.step()
 
         # Logging
-        if batch_idx % args.log_interval == 0:
+        if step % args.log_interval == 0:
             if args.classification:
-                _, predicted = outputs.max(1)
+                log_post = posterior(outputs, num_classes)
+                _, predicted = log_post.max(1)
                 correct = predicted.eq(target).sum().item()
                 acc_term = " Accuracy: {:.2f}".format(100.0 * correct / len(data))
             else:
                 acc_term = ""
             pbar.set_description(
-                "Train Epoch: {} [{}/{}] Loss: {:.2f}{}".format(
-                    epoch,
-                    batch_idx * len(data),
-                    len(train_loader.dataset),
-                    loss.item(),
-                    acc_term,
-                )
+                f"Train Iter: {step}/{iterations} Loss: {loss.item():.2f}{acc_term}"
             )
             if args.dry_run:
                 break
+
+        if (
+            validation_steps is not None
+            and val_loader is not None
+            and step in validation_steps
+            and not args.dry_run
+        ):
+            test(model, device, val_loader, f"Val ({step}/{iterations})")
+            model.train()
 
 
 def test(model, device, loader, tag):
@@ -118,14 +140,17 @@ def test(model, device, loader, tag):
 
             outputs = model(data)
 
-            lls = log_likelihoods(outputs)
-            test_loss += -1 * lls.sum()
-            test_losses += lls.squeeze().cpu().tolist()
-
             if args.classification:
-                _, predicted = outputs.max(1)
+                # Convert log p(x | y) to log p(y | x) for NLL loss.
+                log_post = posterior(outputs, num_classes)
+                test_loss += F.nll_loss(log_post, target, reduction="sum")
+                _, predicted = log_post.max(1)
                 total += target.size(0)
                 correct += predicted.eq(target).sum().item()
+            else:
+                lls = log_likelihoods(outputs)
+                test_loss += -1 * lls.sum()
+                test_losses += lls.squeeze().cpu().tolist()
 
         if args.classification:
             print("Accuracy: {:.2f}".format(100.0 * correct / total))
@@ -144,13 +169,18 @@ if __name__ == "__main__":
     n_bits = args.n_bits
     n_bins = 2**n_bits
 
-    device = torch.device(args.device)
+    if args.device == "cuda" and args.gpu is not None:
+        device = torch.device(f"cuda:{args.gpu}")
+        torch.cuda.set_device(device)
+    else:
+        device = torch.device(args.device)
     # digits = [0, 1, 5, 8]
-    digits = list(range(10))
+    # digits = list(range(10))
     # digits = [0, 1]
+    num_classes = get_data_num_classes(args.dataset) if args.classification else 1
 
     # Construct Einet
-    num_classes = len(digits) if args.classification else 1
+    # num_classes = len(digits) if args.classification else 1
     if args.dist == "binomial":
         leaf_type = Binomial
         leaf_kwargs = {"total_count": n_bins - 1}
@@ -169,6 +199,8 @@ if __name__ == "__main__":
 
     # num_classes = 18
     data_shape = get_data_shape(args.dataset)
+    if args.image_size is not None:
+        data_shape = data_shape.__class__(data_shape.channels, args.image_size, args.image_size)
     num_features = np.prod(data_shape[1:])
     config = EinetConfig(
         num_features=num_features,
@@ -181,11 +213,14 @@ if __name__ == "__main__":
         leaf_type=leaf_type,
         leaf_kwargs=leaf_kwargs,
         layer_type=args.layer,
-        dropout=0.0,
+        dropout=args.dropout,
         structure=args.structure,
     )
 
-    fabric = L.Fabric(accelerator=args.device, devices=args.num_devices, precision="16-mixed")
+    fabric_devices = args.num_devices
+    if args.device == "cuda" and args.gpu is not None:
+        fabric_devices = [int(args.gpu)]
+    fabric = L.Fabric(accelerator=args.device, devices=fabric_devices, precision="16-mixed")
     fabric.launch()
     model = Einet(config)
     print(
@@ -196,8 +231,9 @@ if __name__ == "__main__":
     has_gauss_dist = type(model.leaf.base_leaf) in (Normal, RatNormal)
 
     # Optimize Einet parameters (weights and leaf params)
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=2, gamma=1e-1, verbose=True)
+    optimizer = Lion(model.parameters(), lr=args.lr)
+    # optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
+    # optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9)
 
     model, optimizer = fabric.setup(model, optimizer)
 
@@ -207,33 +243,80 @@ if __name__ == "__main__":
     os.makedirs(result_dir, exist_ok=True)
 
     data_dir = os.path.join("~", "data")
+    num_workers = min(8, os.cpu_count())
     train_loader, val_loader, test_loader = build_dataloader(
         dataset_name=args.dataset,
         batch_size=args.batch_size,
         data_dir=data_dir,
-        num_workers=os.cpu_count(),
-        normalize=False,
-        loop=False,
+        num_workers=num_workers,
+        normalize=has_gauss_dist,
+        loop=True,
         seed=args.seed,
+        image_size=args.image_size,
     )
 
-    train_loader, val_loader, test_loader = fabric.setup_dataloaders(train_loader, val_loader, test_loader)
+    # Build a non-looping training loader for evaluation; the looping one never exhausts.
+    from exp_utils import worker_init_reset_seed
 
+    train_eval_loader = torch.utils.data.DataLoader(
+        train_loader.dataset,
+        shuffle=False,
+        sampler=None,
+        batch_size=args.batch_size,
+        num_workers=num_workers,
+        pin_memory=True,
+        drop_last=False,
+        worker_init_fn=worker_init_reset_seed,
+    )
+
+    steps_per_epoch = math.ceil(len(train_loader.dataset) / args.batch_size)
+    train_iterations = args.iterations
+    if train_iterations is None:
+        train_iterations = args.epochs * steps_per_epoch
+
+    # LR schedule: drop at 66% and 90% of total training iterations.
+    m1 = max(1, int(round(train_iterations * 0.66)))
+    m2 = max(1, int(round(train_iterations * 0.90)))
+    milestones = sorted({m1, m2})
+    lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=milestones, gamma=0.1)
+
+    validations = args.validations
+    if validations is None:
+        # Preserve the old default behavior of "validate once per epoch" as closely as possible.
+        validations = max(1, round(train_iterations / steps_per_epoch))
+
+    if validations <= 0:
+        validation_steps: set[int] = set()
+    else:
+        # Linearly spaced checkpoints in (0, train_iterations], inclusive of the end.
+        validation_steps = set(np.linspace(0, train_iterations, validations + 1, dtype=int).tolist()[1:])
+
+    train_loader, train_eval_loader, val_loader, test_loader = fabric.setup_dataloaders(
+        train_loader, train_eval_loader, val_loader, test_loader
+    )
 
     if args.train:
-        for epoch in range(1, args.epochs + 1):
-            train(args, model, device, train_loader, optimizer, epoch)
-            # lr_scheduler.step()
+        train_for_iterations(
+            args,
+            model,
+            device,
+            train_loader,
+            optimizer,
+            lr_scheduler=lr_scheduler,
+            iterations=train_iterations,
+            validation_steps=validation_steps,
+            val_loader=val_loader,
+        )
 
         torch.save(model.state_dict(), os.path.join(result_dir, "model.pth"))
-        # test(model, device, train_loader, "Train")
-        # test(model, device, val_loader, "Val")
-        # test(model, device, test_loader, "Test")
+        test(model, device, train_eval_loader, "Train")
+        test(model, device, val_loader, "Val")
+        test(model, device, test_loader, "Test")
 
     else:
         model.load_state_dict(torch.load(os.path.join(result_dir, "model.pth")))
 
-        test(model, device, train_loader, "Train")
+        test(model, device, train_eval_loader, "Train")
         test(model, device, val_loader, "Val")
         test(model, device, test_loader, "Test")
 

@@ -12,6 +12,7 @@ import csv
 
 import numpy as np
 import torch
+from torch.nn import functional as F
 import torchvision.transforms as transforms
 from sklearn import datasets
 from sklearn.decomposition import PCA
@@ -110,6 +111,9 @@ def get_data_shape(dataset_name: str) -> Shape:
             "breast_cancer": (1, 30, 1),
             "wine": (1, 13, 1),
             "digits": (1, 8, 8),
+            "olivetti": (1, 64, 64),
+            "olivetti_faces": (1, 64, 64),
+            "olivetti-faces": (1, 64, 64),
         }[dataset_name]
     )
 
@@ -153,6 +157,9 @@ def get_data_num_classes(dataset_name: str) -> int:
         "covtype": 7,
         "breast_cancer": 2,
         "wine": 3,
+        "olivetti": 40,
+        "olivetti_faces": 40,
+        "olivetti-faces": 40,
     }[dataset_name]
 
 
@@ -349,7 +356,9 @@ DEBD_display_name = {
 }
 
 
-def get_datasets(dataset_name, data_dir, normalize: bool) -> Tuple[Dataset, Dataset, Dataset]:
+def get_datasets(
+    dataset_name, data_dir, normalize: bool, image_size: Optional[int] = None
+) -> Tuple[Dataset, Dataset, Dataset]:
     """
     Get the specified dataset.
 
@@ -365,10 +374,14 @@ def get_datasets(dataset_name, data_dir, normalize: bool) -> Tuple[Dataset, Data
     shape = get_data_shape(dataset_name)
 
     # Compose image transformations
+    if image_size is not None and not is_1d_data(dataset_name):
+        resize_size = (image_size, image_size)
+    else:
+        resize_size = (shape.height, shape.width)
     transform = transforms.Compose(
         [
             transforms.Resize(
-                size=(shape.height, shape.width),
+                size=resize_size,
             ),
             transforms.ToTensor(),
         ]
@@ -407,13 +420,14 @@ def get_datasets(dataset_name, data_dir, normalize: bool) -> Tuple[Dataset, Data
         # for dataset in [dataset_train, dataset_test]:
         #     import warnings
         #     warnings.warn("Using only digits 0 and 1 for MNIST.")
+        #     # digits = [0, 1, 2, 3]
         #     digits = [0, 1]
         #     mask = torch.zeros_like(dataset.targets).bool()
         #     for digit in digits:
         #         mask = mask | (dataset.targets == digit)
 
         #     dataset.data = dataset.data[mask]
-        #     dataset.targets = dataset.targets[mask]
+            # dataset.targets = dataset.targets[mask]
 
         N = len(dataset_train.data)
         N_train = round(N * 0.9)
@@ -440,6 +454,10 @@ def get_datasets(dataset_name, data_dir, normalize: bool) -> Tuple[Dataset, Data
 
         ims, labels = np.split(image[..., :3].ravel(), [-70000])
         ims = np.unpackbits(ims).reshape((-1, 1, 28, 28))
+        if image_size is not None and image_size != 28:
+            ims_tensor = torch.from_numpy(ims).float()
+            ims_tensor = F.interpolate(ims_tensor, size=(image_size, image_size), mode="nearest")
+            ims = ims_tensor.round().to(torch.uint8).cpu().numpy()
         ims, labels = [np.split(y, [50000, 60000]) for y in (ims, labels)]
 
         (train_x, train_labels), (test_x, test_labels), (_, _) = (
@@ -484,13 +502,53 @@ def get_datasets(dataset_name, data_dir, normalize: bool) -> Tuple[Dataset, Data
 
 
         # Reshape
-        X_train = X_train.reshape(-1, *shape)
-        X_val = X_val.reshape(-1, *shape)
-        X_test = X_test.reshape(-1, *shape)
+        X_train = torch.tensor(X_train).float().reshape(-1, *shape)
+        X_val = torch.tensor(X_val).float().reshape(-1, *shape)
+        X_test = torch.tensor(X_test).float().reshape(-1, *shape)
 
-        dataset_train = torch.utils.data.TensorDataset(torch.tensor(X_train), torch.tensor(y_train))
-        dataset_val = torch.utils.data.TensorDataset(torch.tensor(X_val), torch.tensor(y_val))
-        dataset_test = torch.utils.data.TensorDataset(torch.tensor(X_test), torch.tensor(y_test))
+        if image_size is not None and image_size != shape.height:
+            X_train = F.interpolate(X_train, size=(image_size, image_size), mode="bilinear", align_corners=False)
+            X_val = F.interpolate(X_val, size=(image_size, image_size), mode="bilinear", align_corners=False)
+            X_test = F.interpolate(X_test, size=(image_size, image_size), mode="bilinear", align_corners=False)
+
+        dataset_train = torch.utils.data.TensorDataset(X_train, torch.tensor(y_train))
+        dataset_val = torch.utils.data.TensorDataset(X_val, torch.tensor(y_val))
+        dataset_test = torch.utils.data.TensorDataset(X_test, torch.tensor(y_test))
+
+    elif dataset_name in {"olivetti", "olivetti_faces", "olivetti-faces"}:
+        # SKlearn Olivetti faces dataset (64x64 grayscale, 40 classes)
+        data_home = os.path.expanduser(data_dir)
+        olivetti = datasets.fetch_olivetti_faces(data_home=data_home, shuffle=True, random_state=42)
+        X, y = olivetti.images, olivetti.target
+
+        X = X.astype(np.float32)
+        if normalize:
+            # Match torchvision Normalize([0.5], [0.5]) behavior for [0,1] inputs
+            X = (X - 0.5) / 0.5
+
+        # Split into train, val, test. Use absolute sizes for val/test to avoid stratify failures when
+        # the fractional split would yield fewer samples than the number of classes (40).
+        n_classes = len(np.unique(y))
+        n_test = max(n_classes, int(round(0.1 * len(y))))
+        n_val = max(n_classes, int(round(0.1 * len(y))))
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=n_test, random_state=42, stratify=y)
+        X_train, X_val, y_train, y_val = train_test_split(
+            X_train, y_train, test_size=n_val, random_state=42, stratify=y_train
+        )
+
+        # Add channel dim to match [N, C, H, W]
+        X_train = torch.tensor(X_train).float().reshape(-1, *shape)
+        X_val = torch.tensor(X_val).float().reshape(-1, *shape)
+        X_test = torch.tensor(X_test).float().reshape(-1, *shape)
+
+        if image_size is not None and image_size != shape.height:
+            X_train = F.interpolate(X_train, size=(image_size, image_size), mode="bilinear", align_corners=False)
+            X_val = F.interpolate(X_val, size=(image_size, image_size), mode="bilinear", align_corners=False)
+            X_test = F.interpolate(X_test, size=(image_size, image_size), mode="bilinear", align_corners=False)
+
+        dataset_train = torch.utils.data.TensorDataset(X_train, torch.tensor(y_train))
+        dataset_val = torch.utils.data.TensorDataset(X_val, torch.tensor(y_val))
+        dataset_test = torch.utils.data.TensorDataset(X_test, torch.tensor(y_test))
 
     elif dataset_name == "fmnist" or dataset_name == "fmnist-32":
         if normalize:
@@ -843,10 +901,19 @@ def is_classification_data(dataset_name):
 
 
 def build_dataloader(
-        dataset_name, data_dir, batch_size, num_workers, loop: bool, normalize: bool, seed: int
+    dataset_name,
+    data_dir,
+    batch_size,
+    num_workers,
+    loop: bool,
+    normalize: bool,
+    seed: int,
+    image_size: Optional[int] = None,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     # Get dataset objects
-    dataset_train, dataset_val, dataset_test = get_datasets(dataset_name, data_dir, normalize=normalize)
+    dataset_train, dataset_val, dataset_test = get_datasets(
+        dataset_name, data_dir, normalize=normalize, image_size=image_size
+    )
 
     # Build data loader
     loader_train = _make_loader(batch_size, num_workers, dataset_train, loop=loop, shuffle=True, seed=seed)
@@ -918,5 +985,3 @@ class TrainingSampler(Sampler):
                 yield from torch.randperm(self._size, generator=g).tolist()
             else:
                 yield from torch.arange(self._size).tolist()
-
-

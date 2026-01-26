@@ -71,6 +71,13 @@ def preprocess(
     dequantize=True,
     has_gauss_dist=True,
 ) -> Tensor:
+    if image.min() < 0 or image.max() > 1:
+        # Undo common [-1, 1] normalization or handle 0-255 inputs.
+        if image.min() >= -1.1 and image.max() <= 1.1:
+            image = image * 0.5 + 0.5
+        elif image.max() > 1:
+            image = image / 255.0
+
     image = reduce_bits(image, n_bits)
     if has_gauss_dist:
         image = image / n_bins - 0.5
